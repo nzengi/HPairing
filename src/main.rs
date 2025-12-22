@@ -1,77 +1,173 @@
-use hpair::{create_group, send_encrypted_message, calculate_quantum_resistance};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::Json,
+    routing::{delete, get, post},
+    Router,
+};
+use hpair::{calculate_quantum_resistance, create_group, destroy_group, send_encrypted_message, GroupId, HPairError};
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use std::sync::Arc;
 
-fn main() {
-    println!("--- HPair Clean API Demo ---");
-    println!("Secure Multi-Linear Group Encryption with Quantum Resistance\n");
+#[derive(Deserialize)]
+struct CreateGroupRequest {
+    participants: Vec<String>,
+}
 
-    // Demo 1: Create and use a secure group
-    println!("=== Demo 1: Basic Group Operations ===");
+#[derive(Serialize)]
+struct CreateGroupResponse {
+    group_id: GroupId,
+}
 
-    let participants = vec![
-        "Alice".to_string(),
-        "Bob".to_string(),
-        "Charlie".to_string(),
-    ];
+#[derive(Deserialize)]
+struct SendMessageRequest {
+    sender: String,
+    message: String,
+}
 
-    // Create group
-    let group_id = match create_group(participants) {
-        Ok(id) => {
-            println!("✅ Group created successfully (ID: {})", id);
-            id
+#[derive(Serialize)]
+struct SendMessageResponse {
+    status: String,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct QuantumResistanceRequest {
+    key: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct QuantumResistanceResponse {
+    quantum_resistance_bits: u32,
+    key_length_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+async fn create_group_handler(
+    State(_state): State<Arc<()>>,
+    Json(payload): Json<CreateGroupRequest>,
+) -> Result<Json<CreateGroupResponse>, (StatusCode, Json<ErrorResponse>)> {
+    println!("📨 Received create_group request with {} participants", payload.participants.len());
+
+    match create_group(payload.participants) {
+        Ok(group_id) => {
+            println!("✅ Group created with ID: {}", group_id);
+            Ok(Json(CreateGroupResponse { group_id }))
         }
         Err(e) => {
             println!("❌ Failed to create group: {}", e);
-            return;
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ))
         }
-    };
-
-    // Participants are automatically set up when group is created
-    println!("✅ Alice and Bob are ready to communicate");
-
-    // Send encrypted messages
-    if let Err(e) = send_encrypted_message(group_id, "Alice", "Hello, secure group!") {
-        println!("❌ Failed to send message: {}", e);
-        return;
     }
-    println!("✅ Alice sent: 'Hello, secure group!'");
+}
 
-    if let Err(e) = send_encrypted_message(group_id, "Bob", "Hi Alice! Great encryption!") {
-        println!("❌ Failed to send message: {}", e);
-        return;
+async fn send_message_handler(
+    State(_state): State<Arc<()>>,
+    Path(group_id): Path<GroupId>,
+    Json(payload): Json<SendMessageRequest>,
+) -> Result<Json<SendMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
+    println!("📨 Received send_message request for group {} from {}", group_id, payload.sender);
+
+    match send_encrypted_message(group_id, &payload.sender, &payload.message) {
+        Ok(_) => {
+            println!("✅ Message sent successfully from {}", payload.sender);
+            Ok(Json(SendMessageResponse {
+                status: "success".to_string(),
+                message: format!("Message from {} sent successfully", payload.sender),
+            }))
+        }
+        Err(e) => {
+            println!("❌ Failed to send message: {}", e);
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ))
+        }
     }
-    println!("✅ Bob sent: 'Hi Alice! Great encryption!'");
+}
 
-    // Demo 2: Quantum resistance calculation
-    println!("\n=== Demo 2: Quantum Resistance Analysis ===");
+async fn destroy_group_handler(
+    State(_state): State<Arc<()>>,
+    Path(group_id): Path<GroupId>,
+) -> Result<Json<SendMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
+    println!("📨 Received destroy_group request for group {}", group_id);
 
-    let test_key = vec![0xAAu8; 32]; // 256-bit test key
-    let quantum_resistance = calculate_quantum_resistance(&test_key);
-
-    println!("🔐 Test key quantum resistance: {} bits", quantum_resistance);
-    println!("📊 This provides approximately {} bits of quantum security", quantum_resistance);
-
-    if quantum_resistance >= 128 {
-        println!("✅ Key meets quantum-resistant standards (>= 128 bits)");
-    } else {
-        println!("⚠️  Key may not provide sufficient quantum resistance");
+    match destroy_group(group_id) {
+        Ok(_) => {
+            println!("✅ Group {} destroyed successfully", group_id);
+            Ok(Json(SendMessageResponse {
+                status: "success".to_string(),
+                message: format!("Group {} destroyed successfully", group_id),
+            }))
+        }
+        Err(e) => {
+            println!("❌ Failed to destroy group: {}", e);
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ))
+        }
     }
+}
 
-    // Demo 3: Error handling
-    println!("\n=== Demo 3: Error Handling ===");
+async fn quantum_resistance_handler(
+    State(_state): State<Arc<()>>,
+    Json(payload): Json<QuantumResistanceRequest>,
+) -> Result<Json<QuantumResistanceResponse>, (StatusCode, Json<ErrorResponse>)> {
+    println!("📨 Received quantum_resistance request for {}-byte key", payload.key.len());
 
-    // Test invalid operations - try sending to non-existent group
-    if let Err(e) = send_encrypted_message(99999, "Alice", "test") {
-        println!("✅ Correctly rejected invalid group: {}", e);
-    }
+    let resistance = calculate_quantum_resistance(&payload.key);
+    println!("🔐 Calculated quantum resistance: {} bits", resistance);
 
-    if let Err(e) = send_encrypted_message(group_id, "Eve", "Unauthorized message") {
-        println!("✅ Correctly rejected unauthorized sender: {}", e);
-    }
+    Ok(Json(QuantumResistanceResponse {
+        quantum_resistance_bits: resistance,
+        key_length_bytes: payload.key.len(),
+    }))
+}
 
-    if let Err(e) = send_encrypted_message(group_id, "Alice", "") {
-        println!("✅ Correctly rejected empty message: {}", e);
-    }
+async fn health_check() -> &'static str {
+    "HPair API Server is running! 🔒"
+}
 
-    println!("\n🎉 HPair Clean API Demo completed successfully!");
-    println!("🔒 All cryptographic operations performed securely with quantum resistance.");
+#[tokio::main]
+async fn main() {
+    println!("🚀 Starting HPair REST API Server...");
+    println!("🔒 Secure Multi-Linear Group Encryption with Quantum Resistance");
+    println!("📡 Server will be available at http://localhost:3000\n");
+
+    let app_state = Arc::new(());
+
+    let app = Router::new()
+        .route("/", get(health_check))
+        .route("/groups", post(create_group_handler))
+        .route("/groups/:group_id/messages", post(send_message_handler))
+        .route("/groups/:group_id", delete(destroy_group_handler))
+        .route("/quantum-resistance", post(quantum_resistance_handler))
+        .with_state(app_state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    println!("🌐 Listening on {}", addr);
+    println!("📚 API Documentation:");
+    println!("  POST /groups - Create a new group");
+    println!("  POST /groups/:id/messages - Send encrypted message");
+    println!("  DELETE /groups/:id - Destroy group");
+    println!("  POST /quantum-resistance - Calculate quantum resistance");
+    println!();
+
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }

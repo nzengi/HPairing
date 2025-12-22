@@ -6,15 +6,12 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use hpair::{create_group, join_group, send_encrypted_message};
+//! use hpair::{create_group, send_encrypted_message};
 //!
 //! // Create a new group
 //! let group_id = create_group(vec!["Alice".to_string(), "Bob".to_string()]).unwrap();
 //!
-//! // Join the group
-//! join_group(group_id, "Alice".to_string()).unwrap();
-//!
-//! // Send encrypted messages
+//! // Participants are automatically set up - send encrypted messages directly
 //! send_encrypted_message(group_id, "Alice", "Hello, secure group!").unwrap();
 //! ```
 //!
@@ -30,7 +27,6 @@ mod algebra;
 mod config;
 mod group_chat;
 mod multilinear;
-mod ni_ke;
 
 use crate::config::api;
 use std::collections::HashMap;

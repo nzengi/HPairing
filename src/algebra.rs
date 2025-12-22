@@ -19,7 +19,6 @@ use ark_ff::PrimeField;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
-
 use crate::config::{field, simulation};
 
 /// Polynomial ring R[X]/(f(X)) where f(X) is the quotient polynomial.
@@ -77,7 +76,7 @@ impl<F: PrimeField> PolynomialRing<F> {
                 let clamped_val = val.clamp(-100, 100); // Reasonable range for noise
 
                 if clamped_val < 0 {
-                    -F::from((-clamped_val) as u64)
+                    F::from((-clamped_val) as u64).neg()
                 } else {
                     F::from(clamped_val as u64)
                 }

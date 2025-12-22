@@ -1,5 +1,5 @@
 use crate::algebra::PolynomialRing;
-use crate::config::{crypto, field, simulation};
+use crate::config::{crypto, simulation};
 use ark_ff::PrimeField;
 use ark_poly::{DenseUVPolynomial, univariate::DensePolynomial};
 use hkdf::Hkdf;

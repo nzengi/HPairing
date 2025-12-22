@@ -2,6 +2,14 @@
 name = "hpair"
 version = "0.1.0"
 edition = "2021"
+authors = ["HPair Team <contact@hpair.dev>"]
+description = "Post-quantum secure multi-linear group encryption library with one-shot key establishment"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/hyperpairing/hpair"
+repository = "https://github.com/hyperpairing/hpair"
+keywords = ["cryptography", "post-quantum", "encryption", "group-key", "multilinear"]
+categories = ["cryptography", "algorithms", "api-bindings"]
 
 [dependencies]
 ark-poly = "0.4.0"
@@ -10,14 +18,16 @@ ark-std = "0.4.0"
 num-bigint = { version = "0.4", features = ["rand"] }
 rand = "0.8"
 rand_distr = "0.4"
-tokio = { version = "1", features = ["full"] }
-itertools = "0.12"
 hex = "0.4"
 sha3 = "0.10"
 aes-gcm = "0.10"
 generic-array = "0.14"
 hkdf = "0.12"
 lazy_static = "1.4"
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 
