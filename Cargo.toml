@@ -1,13 +1,13 @@
 [package]
 name = "hpair"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["HPair Team <howyaniii@gmail.com>"]
 description = "Post-quantum secure multi-linear group encryption library with one-shot key establishment"
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/nzengi/hpair"
-repository = "https://github.com/nzengi/hpair"
+homepage = "https://github.com/nzengi/HPairing"
+repository = "https://github.com/nzengi/HPairing"
 keywords = ["cryptography", "post-quantum", "encryption", "group-key", "multilinear"]
 categories = ["cryptography", "algorithms", "api-bindings"]
 
