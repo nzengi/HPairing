@@ -76,9 +76,9 @@ impl<F: PrimeField> GroupChat<F> {
             return Err("Shared secret too short for AES-256".into());
         }
 
-        // Note: HKDF provides cryptographically strong key material
-        // Additional entropy validation could be added here for extra assurance
-        // but HKDF's security properties make this redundant for most use cases
+        // SECURITY: For multilinear group keys, we trust the cryptographic construction
+        // The multilinear pairing + HKDF provides cryptographically strong key material
+        // Entropy validation is performed at the quantum resistance calculation level
 
         let key = Key::<Aes256Gcm>::from_slice(&shared_key_bytes[..32]);
         let cipher = Aes256Gcm::new(key);
@@ -115,6 +115,8 @@ impl<F: PrimeField> GroupChat<F> {
         if shared_key_bytes.len() < 32 {
             return Err("Shared secret too short for AES-256".into());
         }
+
+        // SECURITY: For multilinear group keys, we trust the cryptographic construction
 
         let key = Key::<Aes256Gcm>::from_slice(&shared_key_bytes[..32]);
         let cipher = Aes256Gcm::new(key);

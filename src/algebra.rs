@@ -20,6 +20,7 @@ use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
 use crate::config::{field, simulation};
+use crate::constant_time;
 
 /// Polynomial ring R[X]/(f(X)) where f(X) is the quotient polynomial.
 ///
@@ -89,28 +90,30 @@ impl<F: PrimeField> PolynomialRing<F> {
         a + b
     }
 
-    /// Optimized polynomial multiplication in R[X]/(f(X))
+    /// Correct polynomial multiplication in R[X]/(X^d + 1)
     ///
-    /// Polynomial multiplication in the ring R[X]/(f(X))
+    /// Polynomial multiplication in the ring R[X]/(X^d + 1) using proper reduction.
     ///
-    /// This implements multiplication in a polynomial ring modulo an irreducible polynomial.
-    /// The implementation uses coefficient-wise multiplication with immediate modular reduction
-    /// to prevent coefficient growth and maintain computational efficiency.
+    /// This implements multiplication in a polynomial ring modulo the cyclotomic polynomial X^d + 1.
+    /// The implementation first computes the full polynomial product, then reduces modulo X^d + 1
+    /// using the identity X^d ≡ -1.
     ///
     /// ## Mathematical Correctness
     ///
+    /// For the cyclotomic polynomial f(X) = X^d + 1, we have X^d ≡ -1.
     /// For polynomials a(X) = Σ aᵢXⁱ and b(X) = Σ bⱼXʲ, the product c(X) = a(X) * b(X) mod f(X)
-    /// satisfies cₖ = Σ_{i+j=k mod d} aᵢ * bⱼ where d = deg(f(X)).
+    /// is computed by:
+    /// 1. Computing the full product p(X) = a(X) * b(X)
+    /// 2. Reducing: for each coefficient p_k where k ≥ d, add -p_k to c_{k-d}
     ///
-    /// This is a simplified but correct implementation for the HPair cryptographic construction.
-    /// For full mathematical rigor in production systems, consider using more sophisticated
-    /// polynomial arithmetic libraries with formal verification.
+    /// This ensures proper ring arithmetic and maintains the algebraic structure required
+    /// for cryptographic security.
     ///
     /// ## Security Considerations
     ///
-    /// - Modular reduction prevents coefficient overflow attacks
+    /// - Proper modular reduction maintains ring structure
     /// - Input validation ensures polynomial degrees stay within bounds
-    /// - Constant-time operations prevent timing side-channels
+    /// - Prevents coefficient overflow that could compromise security
     ///
     /// ## Performance
     ///
@@ -124,16 +127,38 @@ impl<F: PrimeField> PolynomialRing<F> {
             return Err("Input polynomials exceed ring degree".into());
         }
 
-        // Pre-allocate result array for the ring
+        // Compute full polynomial product coefficients
+        // Maximum degree of product is (degree-1) + (degree-1) = 2*degree - 2
+        let mut full_coeffs = vec![F::zero(); 2 * degree - 1];
+
+        // Coefficient-wise multiplication without modular reduction
+        // Use constant-time coefficient access to prevent timing attacks
+        let a_coeffs = a.coeffs();
+        let b_coeffs = b.coeffs();
+
+        for i in 0..degree {
+            for j in 0..degree {
+                if let (Some(&coeff_a), Some(&coeff_b)) = (
+                    constant_time::ct_coeff_access(a_coeffs, i),
+                    constant_time::ct_coeff_access(b_coeffs, j)
+                ) {
+                    let product = coeff_a * coeff_b;
+                    full_coeffs[i + j] += product;
+                }
+            }
+        }
+
+        // Reduce modulo X^degree + 1 using X^degree ≡ -1
         let mut result_coeffs = vec![F::zero(); degree];
 
-        // Coefficient-wise multiplication with modular reduction
-        // Implements: c[k] = Σ_{i+j ≡ k mod d} a[i] * b[j]
-        for (i, &coeff_a) in a.coeffs().iter().enumerate() {
-            for (j, &coeff_b) in b.coeffs().iter().enumerate() {
-                let product = coeff_a * coeff_b;
-                let target_idx = (i + j) % degree;
-                result_coeffs[target_idx] += product;
+        for (i, &coeff) in full_coeffs.iter().enumerate() {
+            if i < degree {
+                // Coefficients within ring degree
+                result_coeffs[i] += coeff;
+            } else {
+                // Reduce using X^degree ≡ -1, so X^i = X^{i-degree} * X^degree ≡ -X^{i-degree}
+                let reduced_idx = i - degree;
+                result_coeffs[reduced_idx] -= coeff;
             }
         }
 
@@ -142,31 +167,32 @@ impl<F: PrimeField> PolynomialRing<F> {
 
     pub fn estimate_noise(&self, p: &DensePolynomial<F>) -> f64 {
         // Estimate noise using L-infinity norm of coefficients
-        // For prime fields, we use the canonical representative and compute distance to zero
+        // SECURITY: Noise estimation operates on potentially secret data.
+        // While this is used for monitoring/debugging, we should be careful
+        // about timing attacks. In production, consider removing or protecting
+        // noise estimates that could leak information about secret polynomials.
+
         let mut max_norm = 0.0f64;
         let field_size = field::FIELD_SIZE as f64;
 
         for coeff in p.coeffs() {
-            // Get the field element as a numeric value
-            // This approach works for small field elements and provides reasonable noise estimation
+            // SECURITY: Converting field elements to strings and parsing is
+            // timing-dependent and could leak information. For production systems,
+            // consider using constant-time field element serialization or
+            // avoiding noise estimation on secret data entirely.
+
+            // For now, we keep this for debugging but note the security concern
             let coeff_str = coeff.to_string();
 
-            // Parse the string representation to get the numeric value
             if let Ok(val) = coeff_str.parse::<u128>() {
-                // For prime fields, elements are in [0, p-1]
-                // Compute the minimal distance to zero in the field
                 let canonical_val = (val % (field::FIELD_SIZE as u128)) as f64;
-
-                // Distance to zero considering the circular nature of finite fields
                 let dist_to_zero = if canonical_val <= field_size / 2.0 {
                     canonical_val
                 } else {
                     field_size - canonical_val
                 };
-
                 max_norm = max_norm.max(dist_to_zero);
             } else {
-                // If parsing fails, use a conservative estimate
                 max_norm = max_norm.max(field_size / 4.0);
             }
         }

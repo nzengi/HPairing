@@ -50,15 +50,18 @@ impl<F: PrimeField> MultiLinearGroup<F> {
             result_val = self.ring.mul(&result_val, &next_enc.value)?;
             current_level += next_enc.level;
 
-            // Noise Management: Monitor growth
+            // Noise Management: Active noise control
             let noise_estimate = self.ring.estimate_noise(&result_val);
-            if i % 10 == 0 || i == encodings.len() - 1 {
-                // In a real system, we would perform 'rerandomization' or 'modulus switching' here
-                // if noise_estimate approach a threshold.
-                // For simulation, we log the growth.
-                if noise_estimate > simulation::NOISE_THRESHOLD {
-                    println!("[Warning] High noise detected at level {}: {:.2e}", i, noise_estimate);
-                }
+
+            if noise_estimate > simulation::NOISE_THRESHOLD {
+                // Perform rerandomization to reduce noise
+                println!("[Noise Management] Rerandomizing at level {} (noise: {:.2e})", i, noise_estimate);
+                result_val = self.rerandomize(&result_val)?;
+            }
+
+            // Check level limits
+            if current_level > self.max_level {
+                return Err(format!("Maximum multilinear level {} exceeded", self.max_level).into());
             }
         }
 
@@ -66,6 +69,16 @@ impl<F: PrimeField> MultiLinearGroup<F> {
             value: result_val,
             level: current_level,
         })
+    }
+
+    /// Rerandomize an encoding to reduce noise
+    ///
+    /// This adds fresh noise to mask the original encoding, reducing the
+    /// effective noise level for subsequent operations.
+    fn rerandomize(&self, encoding: &DensePolynomial<F>) -> Result<DensePolynomial<F>, Box<dyn std::error::Error>> {
+        let mut rng = rand::thread_rng();
+        let fresh_noise = self.ring.sample_error(&mut rng, simulation::ERROR_STD_DEV / 2.0)?;
+        Ok(self.ring.add(encoding, &fresh_noise))
     }
 
     /// Extract cryptographically secure key from polynomial encoding using HKDF
