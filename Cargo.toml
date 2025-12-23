@@ -1,6 +1,6 @@
 [package]
 name = "hpair"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["HPair Team <contact@hpair.dev>"]
 description = "Post-quantum secure multi-linear group encryption library with one-shot key establishment"
