@@ -12,6 +12,7 @@ pub struct GroupParticipant<F: PrimeField> {
     pub pk: Encoding<F>,
 }
 
+#[derive(Clone)]
 pub struct GroupChat<F: PrimeField> {
     pub group: Arc<MultiLinearGroup<F>>,
     pub shared_secret: Option<Vec<u8>>,

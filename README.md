@@ -85,6 +85,25 @@ destroy_group(group_id).unwrap();
 - **Post-quantum security** via lattice-based constructions
 - **Side-channel resistance** through constant-time implementation
 
+## 💾 Data Storage
+
+### Current Implementation
+- **In-Memory Storage**: Groups are stored in RAM using `HashMap`
+- **Persistence**: None - data is lost on server restart
+- **Thread Safety**: Per-group mutexes for concurrent access
+
+### Recommended Improvements
+For production use, consider:
+- **SQLite**: Lightweight, file-based database
+- **PostgreSQL**: Robust relational database
+- **Redis**: In-memory with optional persistence
+- **File-based**: JSON serialization to disk
+
+### Data Flow
+1. **Create Group**: Store in memory HashMap
+2. **Send Message**: Retrieve group from HashMap, process encryption
+3. **Group Cleanup**: Automatic expiration after 24 hours
+
 ## 🧪 Testing
 
 Run the comprehensive test suite:
@@ -98,6 +117,45 @@ Run performance benchmarks:
 ```bash
 cargo bench
 ```
+
+### 🌐 Web Interface Testing
+
+Use the interactive web interface to test all API endpoints:
+
+1. **Start the API server:**
+   ```bash
+   cargo run
+   ```
+   Server will be available at `http://localhost:3000`
+
+2. **Open the web interface (choose one method):**
+   - **Method 1 - Direct browser:** Double-click `web_test_interface.html` file
+   - **Method 2 - Local server:**
+     ```bash
+     python3 -m http.server 8080
+     ```
+     Then open `http://localhost:8080/web_test_interface.html`
+
+3. **Test the API endpoints:**
+   - **Create Group**: Add participants (comma-separated)
+   - **Send Message**: Use the generated Group ID to send encrypted messages
+   - **Quantum Resistance**: Test key analysis with hex input
+   - **Manage Groups**: Delete groups when done
+   - **Debug Tools**: List all groups and check group details
+
+4. **Available API Endpoints:**
+   - `POST /groups` - Create a new group
+   - `GET /groups` - List all active groups
+   - `GET /groups/:id` - Get group details
+   - `POST /groups/:id/messages` - Send encrypted message
+   - `DELETE /groups/:id` - Destroy group
+   - `POST /quantum-resistance` - Calculate quantum resistance
+
+4. **Check API Status:**
+   - Green indicator = API online ✅
+   - Red indicator = API offline ❌ (check server logs)
+
+The web interface provides real-time API status monitoring and handles all error cases gracefully.
 
 ## 🔧 Configuration
 

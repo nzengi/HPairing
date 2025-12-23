@@ -83,13 +83,17 @@ impl std::fmt::Display for HPairError {
 impl std::error::Error for HPairError {}
 
 /// Internal group state with its own mutex for better concurrency
+#[derive(Clone)]
 struct GroupState {
     chat: crate::group_chat::GroupChat<Field>,
     participants: Vec<String>,
     created_at: std::time::Instant,
 }
 
-/// Global registry for all groups with per-group mutexes
+// Global registry for all groups with per-group mutexes
+//
+// NOTE: Currently using in-memory storage. Consider persistent storage for production use.
+// Options: SQLite, PostgreSQL, Redis, or file-based storage.
 lazy_static::lazy_static! {
     static ref GROUPS: Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>> = Mutex::new(HashMap::new());
 }
@@ -231,6 +235,22 @@ pub fn destroy_group(group_id: GroupId) -> Result<(), HPairError> {
     groups.remove(&group_id)
         .ok_or(HPairError::GroupNotFound)?;
     Ok(())
+}
+
+/// List all active groups
+pub fn list_groups() -> Result<Vec<GroupId>, HPairError> {
+    let groups = GROUPS.lock().map_err(|_| HPairError::InternalError("Lock poisoned".to_string()))?;
+    Ok(groups.keys().cloned().collect())
+}
+
+/// Get information about a specific group
+pub fn get_group_info(group_id: GroupId) -> Result<(Vec<String>, std::time::Instant), HPairError> {
+    let groups = GROUPS.lock().map_err(|_| HPairError::InternalError("Lock poisoned".to_string()))?;
+    let group_state_arc = groups.get(&group_id)
+        .ok_or(HPairError::GroupNotFound)?;
+
+    let group_state = group_state_arc.lock().map_err(|_| HPairError::InternalError("Group lock poisoned".to_string()))?;
+    Ok((group_state.participants.clone(), group_state.created_at))
 }
 
 

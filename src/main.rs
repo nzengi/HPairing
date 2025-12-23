@@ -5,7 +5,8 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use hpair::{calculate_quantum_resistance, create_group, destroy_group, send_encrypted_message, GroupId, HPairError};
+use tower_http::cors::{CorsLayer, Any};
+use hpair::{calculate_quantum_resistance, create_group, destroy_group, send_encrypted_message, list_groups, get_group_info, GroupId, HPairError};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,6 +42,19 @@ struct QuantumResistanceRequest {
 struct QuantumResistanceResponse {
     quantum_resistance_bits: u32,
     key_length_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct GroupInfo {
+    group_id: GroupId,
+    participants: Vec<String>,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+struct ListGroupsResponse {
+    groups: Vec<GroupInfo>,
+    total_count: usize,
 }
 
 #[derive(Serialize)]
@@ -139,6 +153,72 @@ async fn quantum_resistance_handler(
     }))
 }
 
+async fn list_groups_handler(
+    State(_state): State<Arc<()>>,
+) -> Result<Json<ListGroupsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    println!("📨 Received list_groups request");
+
+    match hpair::list_groups() {
+        Ok(group_ids) => {
+            let mut groups = Vec::new();
+            for &group_id in &group_ids {
+                if let Ok((participants, created_at)) = hpair::get_group_info(group_id) {
+                    let created_at_str = format!("{:?}", created_at);
+                    groups.push(GroupInfo {
+                        group_id,
+                        participants,
+                        created_at: created_at_str,
+                    });
+                }
+            }
+            let total_count = groups.len();
+            println!("📋 Listed {} groups", total_count);
+            Ok(Json(ListGroupsResponse {
+                groups,
+                total_count,
+            }))
+        }
+        Err(e) => {
+            println!("❌ Failed to list groups: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ))
+        }
+    }
+}
+
+async fn get_group_handler(
+    State(_state): State<Arc<()>>,
+    Path(group_id): Path<GroupId>,
+) -> Result<Json<GroupInfo>, (StatusCode, Json<ErrorResponse>)> {
+    println!("📨 Received get_group request for group {}", group_id);
+
+    match hpair::get_group_info(group_id) {
+        Ok((participants, created_at)) => {
+            let created_at_str = format!("{:?}", created_at);
+            let group_info = GroupInfo {
+                group_id,
+                participants,
+                created_at: created_at_str,
+            };
+            println!("📋 Returned info for group {}", group_id);
+            Ok(Json(group_info))
+        }
+        Err(e) => {
+            println!("❌ Failed to get group {}: {}", group_id, e);
+            Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            ))
+        }
+    }
+}
+
 async fn health_check() -> &'static str {
     "HPair API Server is running! 🔒"
 }
@@ -151,13 +231,21 @@ async fn main() {
 
     let app_state = Arc::new(());
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/", get(health_check))
         .route("/groups", post(create_group_handler))
+        .route("/groups", get(list_groups_handler)) // List all groups
         .route("/groups/:group_id/messages", post(send_message_handler))
+        .route("/groups/:group_id", get(get_group_handler)) // Get group details
         .route("/groups/:group_id", delete(destroy_group_handler))
         .route("/quantum-resistance", post(quantum_resistance_handler))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("🌐 Listening on {}", addr);

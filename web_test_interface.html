@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HPair API Test Interface</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 15px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+        color: white;
+        padding: 30px;
+        text-align: center;
+      }
+
+      .header h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+        font-weight: 300;
+      }
+
+      .header p {
+        font-size: 1.1em;
+        opacity: 0.9;
+      }
+
+      .content {
+        padding: 30px;
+      }
+
+      .section {
+        margin-bottom: 40px;
+        border: 1px solid #e1e8ed;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .section-header {
+        background: #f8f9fa;
+        padding: 20px;
+        border-bottom: 1px solid #e1e8ed;
+      }
+
+      .section-header h2 {
+        color: #2c3e50;
+        font-size: 1.4em;
+        margin-bottom: 5px;
+      }
+
+      .section-header p {
+        color: #7f8c8d;
+        font-size: 0.9em;
+      }
+
+      .section-content {
+        padding: 25px;
+      }
+
+      .form-group {
+        margin-bottom: 20px;
+      }
+
+      .form-group label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 600;
+        color: #2c3e50;
+      }
+
+      .form-group input,
+      .form-group textarea {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #e1e8ed;
+        border-radius: 8px;
+        font-size: 1em;
+        transition: border-color 0.3s ease;
+      }
+
+      .form-group input:focus,
+      .form-group textarea:focus {
+        outline: none;
+        border-color: #3498db;
+        box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+      }
+
+      .form-group textarea {
+        min-height: 100px;
+        resize: vertical;
+      }
+
+      .button-group {
+        display: flex;
+        gap: 15px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        padding: 12px 24px;
+        border: none;
+        border-radius: 8px;
+        font-size: 1em;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-decoration: none;
+        display: inline-block;
+      }
+
+      .btn-primary {
+        background: #3498db;
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: #2980b9;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
+      }
+
+      .btn-success {
+        background: #27ae60;
+        color: white;
+      }
+
+      .btn-success:hover {
+        background: #229954;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(39, 174, 96, 0.4);
+      }
+
+      .btn-danger {
+        background: #e74c3c;
+        color: white;
+      }
+
+      .btn-danger:hover {
+        background: #c0392b;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(231, 76, 60, 0.4);
+      }
+
+      .btn-info {
+        background: #9b59b6;
+        color: white;
+      }
+
+      .btn-info:hover {
+        background: #8e44ad;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(155, 89, 182, 0.4);
+      }
+
+      .response {
+        margin-top: 20px;
+        padding: 20px;
+        border-radius: 8px;
+        background: #f8f9fa;
+        border: 1px solid #e1e8ed;
+      }
+
+      .response.success {
+        background: #d4edda;
+        border-color: #c3e6cb;
+        color: #155724;
+      }
+
+      .response.error {
+        background: #f8d7da;
+        border-color: #f5c6cb;
+        color: #721c24;
+      }
+
+      .response pre {
+        white-space: pre-wrap;
+        word-break: break-all;
+        font-family: "Courier New", monospace;
+        font-size: 0.9em;
+        margin-top: 10px;
+      }
+
+      .status-indicator {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 8px;
+      }
+
+      .status-online {
+        background: #27ae60;
+      }
+
+      .status-offline {
+        background: #e74c3c;
+      }
+
+      .group-info {
+        background: #ecf0f1;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+      }
+
+      .group-info p {
+        margin: 5px 0;
+        font-weight: 500;
+      }
+
+      .tag {
+        display: inline-block;
+        padding: 4px 8px;
+        background: #3498db;
+        color: white;
+        border-radius: 4px;
+        font-size: 0.8em;
+        margin: 2px 4px 2px 0;
+      }
+
+      .loading {
+        display: none;
+        text-align: center;
+        padding: 20px;
+      }
+
+      .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #3498db;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        animation: spin 1s linear infinite;
+        display: inline-block;
+        margin-right: 10px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .tabs {
+        display: flex;
+        border-bottom: 1px solid #e1e8ed;
+        margin-bottom: 20px;
+      }
+
+      .tab {
+        padding: 15px 25px;
+        cursor: pointer;
+        background: #f8f9fa;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1em;
+        font-weight: 600;
+        color: #7f8c8d;
+        transition: all 0.3s ease;
+      }
+
+      .tab.active {
+        background: white;
+        color: #2c3e50;
+        border-bottom-color: #3498db;
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      @media (max-width: 768px) {
+        .header h1 {
+          font-size: 2em;
+        }
+
+        .content {
+          padding: 20px;
+        }
+
+        .button-group {
+          flex-direction: column;
+        }
+
+        .btn {
+          width: 100%;
+          margin-bottom: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🔐 HPair API Test Interface</h1>
+        <p>Secure Multi-Linear Group Encryption with Quantum Resistance</p>
+        <div style="margin-top: 15px">
+          <span class="status-indicator status-offline" id="apiStatus"></span>
+          <span id="apiStatusText">API Status: Checking...</span>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="tabs">
+          <button class="tab active" onclick="switchTab('create')">
+            Create Group
+          </button>
+          <button class="tab" onclick="switchTab('message')">
+            Send Message
+          </button>
+          <button class="tab" onclick="switchTab('quantum')">
+            Quantum Resistance
+          </button>
+          <button class="tab" onclick="switchTab('manage')">
+            Manage Groups
+          </button>
+        </div>
+
+        <!-- Create Group Tab -->
+        <div id="create-tab" class="tab-content active">
+          <div class="section">
+            <div class="section-header">
+              <h2>📝 Create New Group</h2>
+              <p>
+                Create a secure cryptographic group with multiple participants
+              </p>
+            </div>
+            <div class="section-content">
+              <div class="form-group">
+                <label for="participants"
+                  >Participants (comma-separated):</label
+                >
+                <input
+                  type="text"
+                  id="participants"
+                  placeholder="Alice, Bob, Charlie"
+                  value="Alice, Bob, Charlie"
+                />
+              </div>
+              <div class="button-group">
+                <button class="btn btn-primary" onclick="createGroup()">
+                  Create Group
+                </button>
+              </div>
+              <div
+                id="create-response"
+                class="response"
+                style="display: none"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Send Message Tab -->
+        <div id="message-tab" class="tab-content">
+          <div class="section">
+            <div class="section-header">
+              <h2>💬 Send Encrypted Message</h2>
+              <p>Send encrypted messages to group participants</p>
+            </div>
+            <div class="section-content">
+              <div class="form-group">
+                <label for="groupId">Group ID:</label>
+                <input type="text" id="groupId" placeholder="Enter group ID" />
+              </div>
+              <div class="form-group">
+                <label for="sender">Sender:</label>
+                <input
+                  type="text"
+                  id="sender"
+                  name="sender"
+                  placeholder="Alice"
+                  value="Alice"
+                />
+              </div>
+              <div class="form-group">
+                <label for="message">Message:</label>
+                <textarea
+                  id="message"
+                  placeholder="Enter your secure message here..."
+                >
+Hello, secure group!</textarea
+                >
+              </div>
+              <div class="button-group">
+                <button class="btn btn-success" onclick="sendMessage()">
+                  Send Message
+                </button>
+                <button
+                  class="btn btn-info"
+                  onclick="testElements()"
+                  style="margin-left: 10px"
+                >
+                  Test Elements
+                </button>
+                <button
+                  class="btn btn-warning"
+                  onclick="listGroups()"
+                  style="margin-left: 10px"
+                >
+                  List Groups
+                </button>
+              </div>
+              <div
+                id="message-response"
+                class="response"
+                style="display: none"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quantum Resistance Tab -->
+        <div id="quantum-tab" class="tab-content">
+          <div class="section">
+            <div class="section-header">
+              <h2>🛡️ Calculate Quantum Resistance</h2>
+              <p>Analyze the quantum resistance level of a cryptographic key</p>
+            </div>
+            <div class="section-content">
+              <div class="form-group">
+                <label for="keyInput">Key (hex or base64):</label>
+                <input
+                  type="text"
+                  id="keyInput"
+                  placeholder="Enter key in hex format"
+                  value="AAFF00112233445566778899AABBCCDDEEFF"
+                />
+              </div>
+              <div class="button-group">
+                <button
+                  class="btn btn-info"
+                  onclick="calculateQuantumResistance()"
+                >
+                  Calculate Resistance
+                </button>
+              </div>
+              <div
+                id="quantum-response"
+                class="response"
+                style="display: none"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Manage Groups Tab -->
+        <div id="manage-tab" class="tab-content">
+          <div class="section">
+            <div class="section-header">
+              <h2>⚙️ Group Management</h2>
+              <p>Manage existing cryptographic groups</p>
+            </div>
+            <div class="section-content">
+              <div class="form-group">
+                <label for="manageGroupId">Group ID to Delete:</label>
+                <input
+                  type="text"
+                  id="manageGroupId"
+                  placeholder="Enter group ID to delete"
+                />
+              </div>
+              <div class="button-group">
+                <button class="btn btn-danger" onclick="deleteGroup()">
+                  Delete Group
+                </button>
+              </div>
+              <div
+                id="manage-response"
+                class="response"
+                style="display: none"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Loading indicator -->
+        <div class="loading" id="loading">
+          <div class="spinner"></div>
+          Processing request...
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Auto-detect API URL based on current location
+      const API_BASE =
+        window.location.protocol === "file:"
+          ? "http://localhost:3000"
+          : window.location.protocol +
+            "//" +
+            window.location.hostname +
+            ":3000";
+      let currentGroupId = null; // Store as string to avoid JavaScript number precision issues
+
+      // Check API status on load
+      window.onload = function () {
+        checkAPIStatus();
+      };
+
+      function switchTab(tabName) {
+        // Hide all tabs
+        const tabs = document.querySelectorAll(".tab-content");
+        tabs.forEach((tab) => tab.classList.remove("active"));
+
+        // Remove active class from all tab buttons
+        const tabButtons = document.querySelectorAll(".tab");
+        tabButtons.forEach((btn) => btn.classList.remove("active"));
+
+        // Show selected tab
+        document.getElementById(tabName + "-tab").classList.add("active");
+        event.target.classList.add("active");
+      }
+
+      async function checkAPIStatus() {
+        const statusIndicator = document.getElementById("apiStatus");
+        const statusText = document.getElementById("apiStatusText");
+
+        try {
+          const response = await fetch(API_BASE + "/", {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+          if (response.ok) {
+            statusIndicator.className = "status-indicator status-online";
+            statusText.textContent = "API Status: Online ✅";
+          } else {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+        } catch (error) {
+          statusIndicator.className = "status-indicator status-offline";
+          statusText.textContent =
+            "API Status: Offline ❌ - Server not running or CORS issue";
+          console.error("API check failed:", error);
+          if (error.message.includes("CORS")) {
+            statusText.textContent +=
+              " - CORS error: Check server CORS settings";
+          }
+        }
+      }
+
+      function showLoading() {
+        document.getElementById("loading").style.display = "block";
+      }
+
+      function hideLoading() {
+        document.getElementById("loading").style.display = "none";
+      }
+
+      function showResponse(elementId, response, isSuccess = true) {
+        const element = document.getElementById(elementId);
+        element.style.display = "block";
+        element.className = `response ${isSuccess ? "success" : "error"}`;
+        element.innerHTML = `<pre>${JSON.stringify(response, null, 2)}</pre>`;
+      }
+
+      async function createGroup() {
+        const participantsInput = document.getElementById("participants").value;
+        if (!participantsInput.trim()) {
+          showResponse(
+            "create-response",
+            { error: "Please enter participant names" },
+            false
+          );
+          return;
+        }
+
+        const participants = participantsInput
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p);
+        if (participants.length === 0) {
+          showResponse(
+            "create-response",
+            { error: "Please enter at least one participant" },
+            false
+          );
+          return;
+        }
+
+        showLoading();
+
+        try {
+          const response = await fetch(API_BASE + "/groups", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ participants }),
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            currentGroupId = String(result.group_id); // Ensure it's stored as string
+            console.log("New group created with ID:", currentGroupId);
+            showResponse("create-response", result, true);
+            // Auto-fill group ID in message tab
+            document.getElementById("groupId").value = currentGroupId;
+            // Also fill in manage tab
+            document.getElementById("manageGroupId").value = currentGroupId;
+          } else {
+            showResponse("create-response", result, false);
+          }
+        } catch (error) {
+          showResponse("create-response", { error: error.message }, false);
+        }
+
+        hideLoading();
+      }
+
+      async function sendMessage() {
+        // Multiple ways to get sender element
+        let sender = "";
+        const senderEl = document.getElementById("sender");
+
+        if (senderEl) {
+          sender = senderEl.value.trim();
+        } else {
+          // Try alternative methods
+          const inputs = document.querySelectorAll("input");
+          for (let input of inputs) {
+            if (input.placeholder && input.placeholder.includes("Alice")) {
+              sender = input.value.trim();
+              break;
+            }
+          }
+        }
+
+        const groupId = document.getElementById("groupId").value.trim();
+        const message = document.getElementById("message").value.trim();
+
+        console.log(
+          "About to send message with groupId:",
+          groupId,
+          "sender:",
+          sender
+        );
+
+        alert(`Debug Info:
+Group ID: "${groupId}"
+Sender: "${sender}" (element found: ${!!senderEl})
+Message: "${message}"
+
+All found: GroupID=${!!groupId}, Sender=${!!sender}, Message=${!!message}`);
+
+        console.log("Debug - Values:", { groupId, sender, message });
+
+        if (!groupId || !sender || !message) {
+          const missing = [];
+          if (!groupId) missing.push("Group ID");
+          if (!sender) missing.push("Sender");
+          if (!message) missing.push("Message");
+
+          showResponse(
+            "message-response",
+            {
+              error: `Please fill in all fields. Missing: ${missing.join(
+                ", "
+              )}`,
+            },
+            false
+          );
+          return;
+        }
+
+        showLoading();
+
+        try {
+          const response = await fetch(
+            `${API_BASE}/groups/${groupId}/messages`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ sender, message }),
+            }
+          );
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showResponse("message-response", result, true);
+          } else {
+            showResponse("message-response", result, false);
+          }
+        } catch (error) {
+          showResponse("message-response", { error: error.message }, false);
+        }
+
+        hideLoading();
+      }
+
+      function testElements() {
+        const groupIdEl = document.getElementById("groupId");
+        const senderEl = document.getElementById("sender");
+        const messageEl = document.getElementById("message");
+
+        alert(`Element Test:
+Group ID: ${!!groupIdEl} (${groupIdEl ? groupIdEl.value : "null"})
+Sender: ${!!senderEl} (${senderEl ? senderEl.value : "null"})
+Message: ${!!messageEl} (${messageEl ? messageEl.value : "null"})`);
+      }
+
+      async function listGroups() {
+        console.log("Listing groups...");
+
+        try {
+          const response = await fetch(API_BASE + "/groups", {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            console.log("Groups:", result);
+            alert(`Active Groups (${result.total_count}):
+${result.groups
+  .map((g) => `ID: ${g.group_id}, Participants: ${g.participants.join(", ")}`)
+  .join("\n")}`);
+          } else {
+            alert(`Error listing groups: ${JSON.stringify(result, null, 2)}`);
+          }
+        } catch (error) {
+          console.error("List groups failed:", error);
+          alert(`Failed to list groups: ${error.message}`);
+        }
+      }
+
+      async function calculateQuantumResistance() {
+        const keyInput = document.getElementById("keyInput").value.trim();
+        if (!keyInput) {
+          showResponse(
+            "quantum-response",
+            { error: "Please enter a key" },
+            false
+          );
+          return;
+        }
+
+        // Convert hex string to byte array
+        let keyBytes;
+        try {
+          // Remove any spaces or formatting
+          const cleanHex = keyInput.replace(/\s/g, "");
+          keyBytes = [];
+          for (let i = 0; i < cleanHex.length; i += 2) {
+            keyBytes.push(parseInt(cleanHex.substr(i, 2), 16));
+          }
+        } catch (error) {
+          showResponse(
+            "quantum-response",
+            { error: "Invalid hex format. Please enter a valid hex string." },
+            false
+          );
+          return;
+        }
+
+        showLoading();
+
+        try {
+          const response = await fetch(API_BASE + "/quantum-resistance", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ key: keyBytes }),
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showResponse("quantum-response", result, true);
+          } else {
+            showResponse("quantum-response", result, false);
+          }
+        } catch (error) {
+          showResponse("quantum-response", { error: error.message }, false);
+        }
+
+        hideLoading();
+      }
+
+      async function deleteGroup() {
+        const groupId = document.getElementById("manageGroupId").value.trim();
+        if (!groupId) {
+          showResponse(
+            "manage-response",
+            { error: "Please enter a group ID" },
+            false
+          );
+          return;
+        }
+
+        showLoading();
+
+        try {
+          const response = await fetch(`${API_BASE}/groups/${groupId}`, {
+            method: "DELETE",
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showResponse("manage-response", result, true);
+          } else {
+            showResponse("manage-response", result, false);
+          }
+        } catch (error) {
+          showResponse("manage-response", { error: error.message }, false);
+        }
+
+        hideLoading();
+      }
+
+      // Add keyboard shortcuts
+      document.addEventListener("keydown", function (event) {
+        if (event.ctrlKey || event.metaKey) {
+          switch (event.key) {
+            case "1":
+              event.preventDefault();
+              switchTab("create");
+              break;
+            case "2":
+              event.preventDefault();
+              switchTab("message");
+              break;
+            case "3":
+              event.preventDefault();
+              switchTab("quantum");
+              break;
+            case "4":
+              event.preventDefault();
+              switchTab("manage");
+              break;
+          }
+        }
+      });
+
+      // Auto-refresh API status every 30 seconds
+      setInterval(checkAPIStatus, 30000);
+    </script>
+  </body>
+</html>
