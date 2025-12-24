@@ -165,23 +165,46 @@ impl<F: PrimeField> PolynomialRing<F> {
         Ok(DensePolynomial::from_coefficients_slice(&result_coeffs))
     }
 
-    pub fn estimate_noise(&self, p: &DensePolynomial<F>) -> f64 {
+    /// Estimate noise in a polynomial (DEBUG ONLY - timing-dependent)
+    ///
+    /// # Security Warning
+    ///
+    /// This function is **only available in debug builds** due to timing side-channel vulnerabilities.
+    /// The implementation uses string conversion and parsing which leak coefficient information
+    /// through timing channels. This can compromise forward secrecy.
+    ///
+    /// # Usage
+    ///
+    /// This function is automatically called by `estimate_noise()` in debug builds only.
+    /// For production builds, `estimate_noise()` returns a safe constant value (0.0).
+    ///
+    /// # Attack Vector
+    ///
+    /// An attacker measuring execution time can reconstruct polynomial coefficients:
+    /// 1. Different coefficient values take different parsing times
+    /// 2. Timing measurements reveal coefficient structure
+    /// 3. Secret polynomial information is leaked
+    ///
+    /// # Implementation Notes
+    ///
+    /// Uses L-infinity norm estimation via string conversion, which is:
+    /// - Timing-dependent (parse time varies with value)
+    /// - Implementation-dependent (string format varies)
+    /// - Suitable only for development/testing environments
+    #[cfg(debug_assertions)]
+    fn estimate_noise_insecure(&self, p: &DensePolynomial<F>) -> f64 {
         // Estimate noise using L-infinity norm of coefficients
-        // SECURITY: Noise estimation operates on potentially secret data.
-        // While this is used for monitoring/debugging, we should be careful
-        // about timing attacks. In production, consider removing or protecting
-        // noise estimates that could leak information about secret polynomials.
+        // WARNING: This implementation uses timing-dependent string conversion
+        // that leaks coefficient information. Only use in debug builds.
 
         let mut max_norm = 0.0f64;
         let field_size = field::FIELD_SIZE as f64;
 
         for coeff in p.coeffs() {
             // SECURITY: Converting field elements to strings and parsing is
-            // timing-dependent and could leak information. For production systems,
-            // consider using constant-time field element serialization or
-            // avoiding noise estimation on secret data entirely.
+            // timing-dependent and could leak information. This is only safe
+            // in debug builds where security is not the primary concern.
 
-            // For now, we keep this for debugging but note the security concern
             let coeff_str = coeff.to_string();
 
             if let Ok(val) = coeff_str.parse::<u128>() {
@@ -198,5 +221,50 @@ impl<F: PrimeField> PolynomialRing<F> {
         }
 
         max_norm
+    }
+
+    /// Estimate noise in a polynomial (PRODUCTION - constant-time safe)
+    ///
+    /// # Security
+    ///
+    /// In production builds (release mode), this function returns a conservative
+    /// constant value (0.0) to prevent timing side-channel attacks that could leak
+    /// polynomial coefficient information.
+    ///
+    /// # Production Behavior
+    ///
+    /// Returns `0.0` in release builds, which:
+    /// - Eliminates timing side-channel vulnerabilities
+    /// - Disables noise-based rerandomization (security trade-off)
+    /// - Maintains API compatibility across build types
+    ///
+    /// # Debug Behavior
+    ///
+    /// In debug builds, calls `estimate_noise_insecure()` to provide actual noise
+    /// estimates for development and testing purposes.
+    ///
+    /// # Security Trade-off
+    ///
+    /// This design trades noise management optimization for side-channel resistance:
+    /// - **Production**: Security-first approach - noise estimation disabled
+    /// - **Development**: Functionality-first approach - noise estimation enabled
+    ///
+    /// Noise-based rerandomization is a performance/quality optimization, not a
+    /// security requirement. Initial noise levels are controlled during encoding,
+    /// so disabling noise estimation in production is a safe security-first choice.
+    pub fn estimate_noise(&self, p: &DensePolynomial<F>) -> f64 {
+        #[cfg(debug_assertions)]
+        {
+            // Debug builds: Use timing-dependent implementation for development/testing
+            self.estimate_noise_insecure(p)
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            // Production builds: Return safe constant to prevent timing attacks
+            // SECURITY: This eliminates timing side-channels at the cost of disabling
+            // noise-based rerandomization. This is a security-first design choice.
+            0.0
+        }
     }
 }

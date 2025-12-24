@@ -87,4 +87,13 @@ pub mod api {
 
     /// Maximum attempts to generate unique group ID
     pub const MAX_GROUP_ID_ATTEMPTS: u32 = 1000;
+
+    /// Maximum chat state size per group (1MB)
+    pub const MAX_CHAT_STATE_SIZE: usize = 1024 * 1024;
+
+    /// Maximum storage per group including all files (5MB)
+    pub const MAX_STORAGE_PER_GROUP: usize = 5 * 1024 * 1024;
+
+    /// Maximum number of participants per group
+    pub const MAX_PARTICIPANTS: usize = 1000;
 }

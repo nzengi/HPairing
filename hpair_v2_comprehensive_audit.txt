@@ -1,0 +1,1002 @@
+# HPair v2.0 - Comprehensive Security Audit & Development Roadmap
+
+## 🎉 Executive Summary
+
+**Major Improvements Detected!** ✅
+
+Your v2.0 codebase shows **significant security enhancements** compared to v1.0. You've addressed several critical issues, but some high-priority items remain.
+
+**Overall Security Rating: MEDIUM → HIGH** 🔒
+
+- ✅ **FIXED**: Polynomial multiplication (now uses proper reduction)
+- ✅ **FIXED**: Field size upgraded (64-bit → 256-bit BN254)
+- ✅ **FIXED**: Ring degree increased (16 → 256)
+- ✅ **ADDED**: Constant-time operations module
+- ✅ **ADDED**: Persistent encrypted storage
+- ✅ **ADDED**: Noise management (rerandomization)
+- ⚠️ **REMAINING**: Timing attack vulnerabilities in noise estimation
+- ⚠️ **REMAINING**: Missing comprehensive test suite
+- ⚠️ **REMAINING**: Production deployment concerns
+
+---
+
+## 📊 Cold Audit Report
+
+### Severity Classification
+- 🔴 **CRITICAL**: Immediate security risk, must fix before any production use
+- 🟠 **HIGH**: Significant security concern, should fix in next sprint
+- 🟡 **MEDIUM**: Important improvement, plan for upcoming releases
+- 🟢 **LOW**: Nice-to-have, optimization opportunity
+- ℹ️ **INFO**: Best practice suggestion
+
+---
+
+## 🔴 CRITICAL ISSUES (Must Fix Immediately)
+
+### None Detected! 🎉
+
+Great work! All previously critical issues have been addressed:
+- ✅ Polynomial multiplication is now mathematically correct
+- ✅ Field size is cryptographically appropriate
+- ✅ Ring degree meets security standards
+
+---
+
+## 🟠 HIGH PRIORITY ISSUES
+
+### H1. Timing Attack in `estimate_noise()` 🟠
+
+**Location:** `algebra.rs:145-165`
+
+```rust
+pub fn estimate_noise(&self, p: &DensePolynomial<F>) -> f64 {
+    // SECURITY: Converting field elements to strings and parsing is
+    // timing-dependent and could leak information.
+    let coeff_str = coeff.to_string();
+    if let Ok(val) = coeff_str.parse::<u128>() {
+        // Variable-time operations on secret data
+    }
+}
+```
+
+**Issue:** String conversion and parsing introduce timing channels that could leak polynomial coefficients.
+
+**Attack Scenario:**
+1. Attacker measures time for `estimate_noise()` calls
+2. Different coefficient values take different parsing times
+3. Attacker reconstructs polynomial structure from timing measurements
+
+**Impact:** 
+- Can leak secret polynomial coefficients
+- Compromises forward secrecy
+- Real-world exploitability: MEDIUM (requires local access + precision timing)
+
+**Fix Priority:** HIGH - Fix within 2 weeks
+
+**Recommended Solution:**
+
+```rust
+pub fn estimate_noise(&self, p: &DensePolynomial<F>) -> f64 {
+    // SECURITY: For production, consider making this debug-only
+    #[cfg(debug_assertions)]
+    {
+        self.estimate_noise_insecure(p)
+    }
+    
+    #[cfg(not(debug_assertions))]
+    {
+        // In production, return conservative estimate or disable
+        0.0 // or use constant-time alternative
+    }
+}
+
+#[cfg(debug_assertions)]
+fn estimate_noise_insecure(&self, p: &DensePolynomial<F>) -> f64 {
+    // Current implementation for debugging only
+    // ...existing code...
+}
+```
+
+**Alternative:** Implement constant-time field element serialization using `ark_serialize` instead of string conversion.
+
+---
+
+### H2. Field Element String Conversion in `extract()` 🟠
+
+**Location:** `multilinear.rs:78-84`
+
+```rust
+for coeff in encoding.value.coeffs() {
+    let coeff_str = coeff.to_string();
+    let bytes = coeff_str.as_bytes();
+    input_key_material.extend_from_slice(bytes);
+}
+```
+
+**Issue:** Non-deterministic and timing-dependent serialization for cryptographic key material.
+
+**Problems:**
+1. String representation is implementation-dependent
+2. Not constant-time
+3. May leak coefficient information via timing
+4. Inefficient (string allocation for every coefficient)
+
+**Impact:**
+- Side-channel leakage during key extraction
+- Non-deterministic keys (different string formats → different keys)
+- Performance degradation
+
+**Fix Priority:** HIGH - Fix within 2 weeks
+
+**Recommended Solution:**
+
+```rust
+pub fn extract(&self, encoding: &Encoding<F>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use ark_serialize::CanonicalSerialize;
+    
+    // Pre-allocate for deterministic serialization
+    let mut input_key_material = Vec::with_capacity(encoding.value.coeffs().len() * 32);
+    
+    // Use canonical, constant-time serialization
+    for coeff in encoding.value.coeffs() {
+        let mut coeff_bytes = Vec::new();
+        coeff.serialize_uncompressed(&mut coeff_bytes)
+            .map_err(|e| format!("Serialization failed: {}", e))?;
+        input_key_material.extend_from_slice(&coeff_bytes);
+    }
+    
+    // SECURITY: HKDF key derivation provides forward secrecy
+    let hkdf = Hkdf::<Sha3_256>::new(None, &input_key_material);
+    let mut output_key_material = [0u8; crypto::HKDF_OUTPUT_SIZE];
+    
+    hkdf.expand(b"multilinear-key-v1", &mut output_key_material)
+        .map_err(|e| format!("HKDF expansion failed: {:?}", e))?;
+    
+    Ok(output_key_material.to_vec())
+}
+```
+
+---
+
+### H3. Missing Input Validation in Storage Operations 🟠
+
+**Location:** `storage.rs:60-100`
+
+**Issue:** Storage operations don't validate file sizes or enforce per-group resource limits.
+
+**Attack Scenario:**
+1. Attacker creates groups with massive chat states
+2. Fills disk with encrypted data
+3. System runs out of storage
+4. DoS for legitimate users
+
+**Fix Priority:** HIGH - Fix within 2 weeks
+
+**Recommended Solution:**
+
+```rust
+pub const MAX_CHAT_STATE_SIZE: usize = 1024 * 1024; // 1MB per group
+pub const MAX_STORAGE_PER_GROUP: usize = 5 * 1024 * 1024; // 5MB total
+
+pub fn store_group(
+    &self,
+    group_id: u64,
+    participants: Vec<String>,
+    chat_state: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate sizes
+    if chat_state.len() > MAX_CHAT_STATE_SIZE {
+        return Err("Chat state too large".into());
+    }
+    
+    if participants.len() > api::MAX_PARTICIPANT_NAME_LEN {
+        return Err("Too many participants".into());
+    }
+    
+    // Check total storage quota
+    let total_size = self.calculate_group_storage_size(group_id)?;
+    if total_size > MAX_STORAGE_PER_GROUP {
+        return Err("Storage quota exceeded".into());
+    }
+    
+    // ... rest of implementation
+}
+```
+
+---
+
+### H4. Race Condition in Group ID Generation 🟠
+
+**Location:** `lib.rs:176-195`
+
+```rust
+fn generate_secure_group_id() -> Result<GroupId, HPairError> {
+    let cache = IN_MEMORY_CACHE.lock()...
+    if !cache.contains_key(&group_id) && STORAGE.load_group(group_id).is_err() {
+        return Ok(group_id);
+    }
+}
+```
+
+**Issue:** TOCTOU (Time-Of-Check-Time-Of-Use) race between checking and inserting.
+
+**Attack Scenario:**
+1. Thread A generates ID X, checks it's available
+2. Thread B generates same ID X, checks it's available (between A's check and insert)
+3. Both threads proceed with same group ID
+4. Group state corruption
+
+**Probability:** Low but non-zero with high concurrency
+
+**Fix Priority:** HIGH - Fix within 2 weeks
+
+**Recommended Solution:**
+
+```rust
+fn generate_secure_group_id() -> Result<GroupId, HPairError> {
+    let mut attempts = 0;
+    
+    while attempts < api::MAX_GROUP_ID_ATTEMPTS {
+        let mut id_bytes = [0u8; 8];
+        OsRng.fill_bytes(&mut id_bytes);
+        let group_id = u64::from_le_bytes(id_bytes);
+        
+        if group_id == 0 {
+            attempts += 1;
+            continue;
+        }
+        
+        // Atomic check-and-insert
+        static IN_MEMORY_CACHE: Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
+            Lazy::new(|| Mutex::new(HashMap::new()));
+            
+        let mut cache = IN_MEMORY_CACHE.lock()
+            .map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
+        
+        // Double-check in same critical section
+        if !cache.contains_key(&group_id) && STORAGE.load_group(group_id).is_err() {
+            // Reserve the ID immediately
+            cache.insert(group_id, Arc::new(Mutex::new(
+                // Use placeholder state that will be updated
+                create_placeholder_state()
+            )));
+            return Ok(group_id);
+        }
+        
+        attempts += 1;
+    }
+    
+    Err(HPairError::InternalError("Could not generate unique group ID".to_string()))
+}
+```
+
+---
+
+## 🟡 MEDIUM PRIORITY ISSUES
+
+### M1. Incomplete Constant-Time Implementation 🟡
+
+**Location:** `constant_time.rs`
+
+**Issue:** Module provides constant-time primitives but they're not consistently used.
+
+**Examples:**
+- `ct_coeff_access()` just wraps `safe_array_access()` (not constant-time)
+- `ct_in_range()` has timing-dependent branching
+- No constant-time conditional moves for field elements
+
+**Impact:** Partial protection, false sense of security
+
+**Fix Priority:** MEDIUM - Fix in next sprint (1 month)
+
+**Recommended Solution:**
+
+```rust
+/// Truly constant-time coefficient access using subtle crate
+pub fn ct_coeff_access<F: ConditionallySelectable>(
+    coeffs: &[F], 
+    index: usize
+) -> Option<F> where F: Copy + Default {
+    let len = coeffs.len();
+    
+    if index >= len {
+        return None;
+    }
+    
+    // Constant-time selection
+    let mut result = F::default();
+    for (i, &coeff) in coeffs.iter().enumerate() {
+        let choice = Choice::from(if i == index { 1 } else { 0 });
+        result = F::conditional_select(&result, &coeff, choice);
+    }
+    
+    Some(result)
+}
+
+/// Constant-time range check without branching
+pub fn ct_in_range(value: u64, min: u64, max: u64) -> Choice {
+    let ge_min = value.wrapping_sub(min).ct_eq(&value.saturating_sub(min));
+    let le_max = max.wrapping_sub(value).ct_eq(&max.saturating_sub(value));
+    ge_min & le_max
+}
+```
+
+---
+
+### M2. Insufficient Error Information in Encrypted Storage 🟡
+
+**Location:** `storage.rs:200-220`
+
+```rust
+fn decrypt_group_data(...) -> Result<GroupData, Box<dyn std::error::Error>> {
+    let decrypted = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+}
+```
+
+**Issue:** Generic error messages don't distinguish between authentication failure and data corruption.
+
+**Impact:**
+- Hard to debug legitimate issues
+- Can't distinguish attacks from bugs
+- No audit trail for failed decryptions
+
+**Fix Priority:** MEDIUM - Fix in next sprint
+
+**Recommended Solution:**
+
+```rust
+#[derive(Debug)]
+pub enum StorageError {
+    AuthenticationFailed,
+    DataCorrupted,
+    KeyMismatch,
+    FileNotFound,
+    PermissionDenied,
+    QuotaExceeded,
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageError::AuthenticationFailed => 
+                write!(f, "Storage authentication failed - possible tampering"),
+            StorageError::DataCorrupted => 
+                write!(f, "Storage data corrupted"),
+            // ... other variants
+        }
+    }
+}
+
+fn decrypt_group_data(...) -> Result<GroupData, StorageError> {
+    let decrypted = cipher.decrypt(nonce, ciphertext)
+        .map_err(|_| StorageError::AuthenticationFailed)?;
+    
+    let json_str = String::from_utf8(decrypted)
+        .map_err(|_| StorageError::DataCorrupted)?;
+    
+    let data: GroupData = serde_json::from_str(&json_str)
+        .map_err(|_| StorageError::DataCorrupted)?;
+    
+    Ok(data)
+}
+```
+
+---
+
+### M3. No Rate Limiting on Group Creation 🟡
+
+**Location:** `lib.rs:142-175`
+
+**Issue:** No protection against rapid group creation spam.
+
+**Attack Scenario:**
+1. Attacker creates 10,000 groups rapidly
+2. Fills MAX_GROUPS limit
+3. Legitimate users can't create groups
+4. DoS attack
+
+**Fix Priority:** MEDIUM - Fix in next sprint
+
+**Recommended Solution:**
+
+```rust
+use std::collections::VecDeque;
+use std::time::Instant;
+
+struct RateLimiter {
+    requests: VecDeque<Instant>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl RateLimiter {
+    fn check_rate_limit(&mut self) -> bool {
+        let now = Instant::now();
+        
+        // Remove old requests
+        while let Some(&oldest) = self.requests.front() {
+            if now.duration_since(oldest) > self.window {
+                self.requests.pop_front();
+            } else {
+                break;
+            }
+        }
+        
+        // Check limit
+        if self.requests.len() >= self.max_requests {
+            return false;
+        }
+        
+        self.requests.push_back(now);
+        true
+    }
+}
+
+// Global rate limiter: 10 groups per minute
+static RATE_LIMITER: Lazy<Mutex<RateLimiter>> = Lazy::new(|| {
+    Mutex::new(RateLimiter {
+        requests: VecDeque::new(),
+        max_requests: 10,
+        window: Duration::from_secs(60),
+    })
+});
+
+pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
+    // Check rate limit
+    let mut limiter = RATE_LIMITER.lock()
+        .map_err(|_| HPairError::InternalError("Rate limiter lock poisoned".to_string()))?;
+    
+    if !limiter.check_rate_limit() {
+        return Err(HPairError::GroupCreationFailed);
+    }
+    
+    // ... rest of implementation
+}
+```
+
+---
+
+### M4. Memory Leak Risk in Cache 🟡
+
+**Location:** `lib.rs:206-230` (IN_MEMORY_CACHE)
+
+**Issue:** Groups stay in cache even if they're not being used, wasting memory.
+
+**Impact:**
+- Long-running server accumulates groups
+- Memory grows unbounded over time
+- No LRU eviction policy
+
+**Fix Priority:** MEDIUM - Fix in next sprint
+
+**Recommended Solution:**
+
+```rust
+use lru::LruCache;
+
+static IN_MEMORY_CACHE: Lazy<Mutex<LruCache<GroupId, Arc<Mutex<GroupState>>>>> = 
+    Lazy::new(|| {
+        Mutex::new(LruCache::new(
+            std::num::NonZeroUsize::new(1000).unwrap()
+        ))
+    });
+
+// Automatically evicts least-recently-used groups
+// Evicted groups will be reloaded from persistent storage when needed
+```
+
+---
+
+## 🟢 LOW PRIORITY ISSUES
+
+### L1. No Metrics/Monitoring 🟢
+
+**Issue:** No telemetry for production debugging.
+
+**Fix:** Add metrics using `prometheus` crate:
+
+```rust
+use prometheus::{Counter, Histogram, Registry};
+
+lazy_static! {
+    static ref GROUPS_CREATED: Counter = Counter::new(
+        "hpair_groups_created_total", 
+        "Total groups created"
+    ).unwrap();
+    
+    static ref MESSAGE_ENCRYPTION_TIME: Histogram = Histogram::new(
+        "hpair_encryption_duration_seconds",
+        "Message encryption duration"
+    ).unwrap();
+}
+
+pub fn create_group(...) -> Result<GroupId, HPairError> {
+    GROUPS_CREATED.inc();
+    // ... implementation
+}
+```
+
+---
+
+### L2. Missing Structured Logging 🟢
+
+**Issue:** Using `println!()` instead of proper logging framework.
+
+**Fix:** Replace with `tracing` crate:
+
+```rust
+use tracing::{info, warn, error, debug, instrument};
+
+#[instrument(skip(participants))]
+pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
+    info!(participant_count = participants.len(), "Creating new group");
+    
+    // ... implementation
+    
+    info!(group_id = ?group_id, "Group created successfully");
+    Ok(group_id)
+}
+```
+
+---
+
+### L3. No Configuration Management 🟢
+
+**Issue:** All configuration is hardcoded constants.
+
+**Fix:** Use `config` crate with environment variables:
+
+```rust
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct HpairConfig {
+    pub max_groups: usize,
+    pub max_message_len: usize,
+    pub group_lifetime_secs: u64,
+    pub storage_dir: PathBuf,
+    pub log_level: String,
+}
+
+impl HpairConfig {
+    pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        let config = config::Config::builder()
+            .add_source(config::Environment::with_prefix("HPAIR"))
+            .set_default("max_groups", 10000)?
+            .set_default("max_message_len", 65536)?
+            .set_default("group_lifetime_secs", 86400)?
+            .build()?;
+        
+        Ok(config.try_deserialize()?)
+    }
+}
+```
+
+---
+
+## ℹ️ INFORMATIONAL / BEST PRACTICES
+
+### I1. Documentation Quality ℹ️
+
+**Current:** Good inline documentation, but missing:
+- API usage examples
+- Integration guide
+- Security considerations document
+- Performance tuning guide
+
+**Recommendation:**
+
+```markdown
+# docs/
+├── README.md           # Quick start
+├── API.md              # Full API reference
+├── SECURITY.md         # Threat model & security properties
+├── PERFORMANCE.md      # Benchmarks & tuning
+├── CONTRIBUTING.md     # Development guide
+└── DEPLOYMENT.md       # Production deployment
+```
+
+---
+
+### I2. Missing Fuzzing Infrastructure ℹ️
+
+**Recommendation:** Add fuzzing for cryptographic operations:
+
+```rust
+// fuzz/fuzz_targets/polynomial_mul.rs
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+use hpair::algebra::PolynomialRing;
+
+fuzz_target!(|data: &[u8]| {
+    if data.len() < 64 {
+        return;
+    }
+    
+    let ring = PolynomialRing::<Field>::new(256);
+    // Generate polynomials from fuzzer input
+    // Test multiplication
+    // Check invariants
+});
+```
+
+---
+
+### I3. Missing Property-Based Tests ℹ️
+
+**Recommendation:** Use `proptest` for algebraic properties:
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn polynomial_multiplication_associative(
+        a in polynomial_strategy(),
+        b in polynomial_strategy(),
+        c in polynomial_strategy()
+    ) {
+        let ring = PolynomialRing::new(256);
+        
+        // (a * b) * c == a * (b * c)
+        let left = ring.mul(&ring.mul(&a, &b)?, &c)?;
+        let right = ring.mul(&a, &ring.mul(&b, &c)?)?;
+        
+        prop_assert_eq!(left, right);
+    }
+}
+```
+
+---
+
+## 🚀 Development Roadmap
+
+### Phase 1: Critical Security Hardening (Weeks 1-2) 🔴
+
+**Goal:** Fix all HIGH priority issues for production readiness
+
+#### Sprint 1.1 (Week 1)
+- [ ] **H2**: Implement constant-time serialization in `extract()`
+  - Use `ark_serialize::CanonicalSerialize`
+  - Add unit tests for determinism
+  - Benchmark performance impact
+- [ ] **H3**: Add storage resource limits
+  - Implement per-group quotas
+  - Add file size validation
+  - Test disk exhaustion scenarios
+- [ ] **H4**: Fix group ID generation race condition
+  - Atomic check-and-insert
+  - Add concurrency tests
+  - Measure contention
+
+**Deliverables:**
+- ✅ No timing attacks in key derivation
+- ✅ DoS protection in storage
+- ✅ Thread-safe group creation
+
+**Success Metrics:**
+- All HIGH issues closed
+- Zero timing variance in benchmarks
+- Concurrent creation tests pass
+
+---
+
+#### Sprint 1.2 (Week 2)
+- [ ] **H1**: Fix timing attack in `estimate_noise()`
+  - Move to debug-only or implement constant-time
+  - Add compilation flags
+  - Document security trade-offs
+- [ ] **Security audit prep**
+  - Document all cryptographic assumptions
+  - Create threat model document
+  - Prepare test vectors
+
+**Deliverables:**
+- ✅ Production-ready binary (no timing leaks)
+- ✅ Security documentation complete
+- ✅ Ready for external audit
+
+**Success Metrics:**
+- Constant-time guarantees verified
+- Documentation reviewed
+- Pre-audit checklist complete
+
+---
+
+### Phase 2: Testing & Quality (Weeks 3-6) 🟡
+
+**Goal:** Achieve 90%+ code coverage and property-based testing
+
+#### Sprint 2.1 (Weeks 3-4)
+- [ ] **Unit test suite**
+  - Algebra module: 100% coverage
+  - Storage module: 100% coverage
+  - Multilinear group: 100% coverage
+  - API layer: 95%+ coverage
+- [ ] **Integration tests**
+  - Multi-client scenarios
+  - Concurrent operations
+  - Failure recovery
+  - Storage corruption recovery
+
+**Deliverables:**
+- ✅ 90%+ code coverage
+- ✅ 500+ test cases
+- ✅ CI/CD pipeline
+
+**Test Checklist:**
+```rust
+// algebra_tests.rs
+#[test] fn test_polynomial_mul_identity()
+#[test] fn test_polynomial_mul_commutative()
+#[test] fn test_polynomial_mul_associative()
+#[test] fn test_polynomial_mul_distributive()
+#[test] fn test_correct_reduction_modulo_quotient()
+#[test] fn test_noise_sampling_distribution()
+
+// multilinear_tests.rs
+#[test] fn test_encode_decode_roundtrip()
+#[test] fn test_pairing_correctness()
+#[test] fn test_noise_growth_bounds()
+#[test] fn test_key_extraction_determinism()
+
+// storage_tests.rs
+#[test] fn test_encryption_decryption_roundtrip()
+#[test] fn test_tamper_detection()
+#[test] fn test_concurrent_access()
+#[test] fn test_quota_enforcement()
+#[test] fn test_expiration_cleanup()
+
+// api_tests.rs
+#[test] fn test_create_group_validation()
+#[test] fn test_send_message_authorization()
+#[test] fn test_rate_limiting()
+#[test] fn test_group_lifecycle()
+```
+
+---
+
+#### Sprint 2.2 (Weeks 5-6)
+- [ ] **Property-based testing**
+  - Use `proptest` for algebraic properties
+  - 100+ property tests
+  - Shrinking for minimal counterexamples
+- [ ] **Fuzzing infrastructure**
+  - Set up `cargo-fuzz`
+  - 5+ fuzz targets
+  - Run 24h fuzzing campaign
+
+**Deliverables:**
+- ✅ Property tests for all algebra
+- ✅ Fuzzing finds no crashes in 24h
+- ✅ Benchmark suite
+
+**Fuzzing Targets:**
+```rust
+// fuzz_targets/
+├── polynomial_mul.rs       // Test multiplication
+├── key_extraction.rs       // Test extract()
+├── storage_decrypt.rs      // Test decryption
+├── group_creation.rs       // Test create_group()
+└── message_encryption.rs   // Test broadcast()
+```
+
+---
+
+### Phase 3: Performance & Optimization (Weeks 7-10) 🟢
+
+**Goal:** Optimize for production workloads
+
+#### Sprint 3.1 (Weeks 7-8)
+- [ ] **M1**: Complete constant-time implementation
+  - Constant-time coefficient access
+  - Constant-time range checks
+  - Audit all field operations
+- [ ] **Benchmarking**
+  - Create comprehensive benchmark suite
+  - Profile hot paths
+  - Identify optimization opportunities
+
+**Deliverables:**
+- ✅ Full constant-time implementation
+- ✅ Benchmark suite with baselines
+- ✅ Performance report
+
+**Benchmark Targets:**
+```rust
+// benches/hpair_bench.rs
+#[bench] fn bench_group_creation()
+#[bench] fn bench_message_encryption()
+#[bench] fn bench_polynomial_mul()
+#[bench] fn bench_key_extraction()
+#[bench] fn bench_storage_operations()
+```
+
+---
+
+#### Sprint 3.2 (Weeks 9-10)
+- [ ] **Performance optimizations**
+  - SIMD for polynomial operations (if applicable)
+  - Parallel group creation
+  - Cache optimizations
+  - Memory pool for allocations
+- [ ] **M4**: Implement LRU cache
+  - Replace HashMap with LruCache
+  - Tune cache size
+  - Monitor hit rates
+
+**Deliverables:**
+- ✅ 2-5x performance improvement
+- ✅ Memory usage reduced 30%+
+- ✅ Scalability testing
+
+**Target Performance:**
+```
+Group Creation: < 50ms
+Message Encryption: < 5ms
+Storage Load: < 10ms
+Memory per Group: < 1MB
+```
+
+---
+
+### Phase 4: Production Features (Weeks 11-14) 🟢
+
+**Goal:** Production-ready deployment capabilities
+
+#### Sprint 4.1 (Weeks 11-12)
+- [ ] **M2**: Proper error handling
+  - Replace Box<dyn Error> with custom error types
+  - Error categorization
+  - User-friendly error messages
+- [ ] **M3**: Rate limiting
+  - Per-IP rate limits
+  - Per-user quotas
+  - Adaptive rate limiting
+- [ ] **L1**: Metrics & monitoring
+  - Prometheus integration
+  - Grafana dashboards
+  - Alerting rules
+
+**Deliverables:**
+- ✅ Production error handling
+- ✅ DoS protection
+- ✅ Observability
+
+**Monitoring Dashboard:**
+```
+HPair Monitoring Dashboard
+├── Request Rate (groups/sec)
+├── Encryption Latency (p50, p95, p99)
+├── Storage Usage (bytes)
+├── Error Rate (%)
+├── Active Groups
+└── Cache Hit Rate (%)
+```
+
+---
+
+#### Sprint 4.2 (Weeks 13-14)
+- [ ] **L2**: Structured logging
+  - Replace println! with tracing
+  - Log levels configuration
+  - Structured JSON logs
+- [ ] **L3**: Configuration management
+  - Environment variables
+  - Config files
+  - Runtime reconfiguration
+- [ ] **Deployment automation**
+  - Docker images
+  - Kubernetes manifests
+  - Terraform scripts
+
+**Deliverables:**
+- ✅ Production logging
+- ✅ Flexible configuration
+- ✅ One-click deployment
+
+**Deployment Artifacts:**
+```
+deploy/
+├── Dockerfile
+├── docker-compose.yml
+├── kubernetes/
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── ingress.yaml
+└── terraform/
+    ├── main.tf
+    └── variables.tf
+```
+
+---
+
+### Phase 5: Documentation & Launch (Weeks 15-16) 📚
+
+**Goal:** Complete documentation and soft launch
+
+#### Sprint 5.1 (Week 15)
+- [ ] **I1**: Complete documentation
+  - API reference
+  - Security guide
+  - Deployment guide
+  - Performance tuning guide
+- [ ] **Example applications**
+  - CLI chat client
+  - Web dashboard
+  - SDK examples (Python, JS)
+
+**Deliverables:**
+- ✅ Complete docs site
+- ✅ Example applications
+- ✅ Video tutorials
+
+---
+
+#### Sprint 5.2 (Week 16)
+- [ ] **External security audit**
+  - Engage audit firm (Trail of Bits, NCC Group)
+  - Address findings
+  - Publish audit report
+- [ ] **Beta launch preparation**
+  - Set up infrastructure
+  - Beta user onboarding
+  - Support channels
+
+**Deliverables:**
+- ✅ Security audit passed
+- ✅ Beta program live
+- ✅ Public launch ready
+
+---
+
+## 📋 Quality Gates & Acceptance Criteria
+
+### Phase 1 Exit Criteria (Production Security)
+- [ ] All HIGH priority issues fixed
+- [ ] No timing attacks in security-critical paths
+- [ ] Storage resource limits enforced
+- [ ] Concurrent operation tests pass
+- [ ] Pre-audit checklist complete
+
+### Phase 2 Exit Criteria (Testing Complete)
+- [ ] 90%+ code coverage
+- [ ] 500+ unit tests passing
+- [ ] 100+ property tests
+- [ ] 24h fuzzing with zero crashes
+- [ ] All integration tests green
+
+### Phase 3 Exit Criteria (Performance Optimized)
+- [ ] Group creation < 50ms
+- [ ] Message encryption < 5ms
+- [ ] Full constant-time implementation
+- [ ] Benchmark suite with baselines
+- [ ] Scalability tested to 10k groups
+
+### Phase 4 Exit Criteria (Production Ready)
+- [ ] Comprehensive error handling
+- [ ] Rate limiting implemented
+- [ ] Monitoring dashboards
+- [ ] Structured logging
+- [ ] One-click deployment
+
+### Phase 5 Exit Criteria (Launch Ready)
+- [ ] Complete documentation
+- [ ] Example applications
+- [ ] External security audit passed
+- [ ] Beta users onboarded
+- [ ] Public launch checklist complete
+
+---
+
+## 🎯 Success Metrics
+
+### Technical Metrics
+- **Code Coverage:** 90%+
+- **Security Issues:** 0 HIGH or CRITICAL
+- **Performance:** 
+  - Group creation: < 50ms
+  - Encryption: < 5ms
+  - Memory per group: < 1MB
+- **Reliability:** 99

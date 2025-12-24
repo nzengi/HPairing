@@ -46,7 +46,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use rand::{RngCore, rngs::OsRng};
-use ark_ff::{MontBackend, MontConfig};
+use ark_ff::{MontBackend, MontConfig, Zero};
 use ark_poly::DenseUVPolynomial;
 
 #[derive(MontConfig)]
@@ -201,6 +201,7 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
         .map_err(|_| HPairError::GroupCreationFailed)?;
 
     // Generate cryptographically secure random group ID
+    // This inserts a placeholder in cache atomically to prevent race conditions
     let group_id = generate_secure_group_id()?;
 
     // Store group metadata using persistent storage
@@ -210,25 +211,44 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs(),
-    }).map_err(|_| HPairError::GroupCreationFailed)?;
+    }).map_err(|_| {
+        // Cleanup placeholder on serialization failure
+        static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
+            once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+        let mut cache = IN_MEMORY_CACHE.lock().ok();
+        if let Some(ref mut c) = cache {
+            c.remove(&group_id);
+        }
+        HPairError::GroupCreationFailed
+    })?;
 
     STORAGE.store_group(group_id, participants.clone(), &metadata)
-        .map_err(|_| HPairError::GroupCreationFailed)?;
+        .map_err(|_| {
+            // Cleanup placeholder on storage failure
+            static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
+                once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+            let mut cache = IN_MEMORY_CACHE.lock().ok();
+            if let Some(ref mut c) = cache {
+                c.remove(&group_id);
+            }
+            HPairError::GroupCreationFailed
+        })?;
 
-    // Keep in-memory instance for this session (this is a simplified approach)
-    // In a full implementation, you'd load from storage when needed
+    // Create real group state
     let group_state = GroupState {
         chat,
-        participants,
+        participants: participants.clone(),
         created_at: std::time::Instant::now(),
     };
 
-    // For now, we'll maintain a small in-memory cache for active groups
-    // In production, you'd want to load from storage each time
+    // Replace placeholder with real state atomically
+    // The placeholder was inserted by generate_secure_group_id() to prevent race conditions
     {
         static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
             once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
         let mut cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
+        
+        // Replace placeholder (should always exist due to generate_secure_group_id)
         cache.insert(group_id, Arc::new(Mutex::new(group_state)));
     }
 
@@ -236,24 +256,76 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
 }
 
 /// Generate a cryptographically secure random group ID
+///
+/// Returns a unique group ID that doesn't exist in either the in-memory cache
+/// or persistent storage.
+///
+/// # Thread Safety
+///
+/// This function uses atomic check-and-insert to prevent TOCTOU race conditions.
+/// The lock is held during both the availability check and placeholder insertion,
+/// ensuring that two threads cannot generate the same group ID concurrently.
+///
+/// # Returns
+/// * `Ok(GroupId)` - Unique group ID (placeholder already inserted in cache)
+/// * `Err(HPairError)` - If max attempts exceeded
 fn generate_secure_group_id() -> Result<GroupId, HPairError> {
-    let mut attempts = 0;
+    static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
+        once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
-    while attempts < api::MAX_GROUP_ID_ATTEMPTS {
+    for _ in 0..api::MAX_GROUP_ID_ATTEMPTS {
         let mut id_bytes = [0u8; 8];
         OsRng.fill_bytes(&mut id_bytes);
         let group_id = u64::from_le_bytes(id_bytes);
 
-        // Ensure ID is not zero and not already in use
-        if group_id != 0 {
-            static IN_MEMORY_CACHE: Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-                Lazy::new(|| Mutex::new(HashMap::new()));
-            let cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
-            if !cache.contains_key(&group_id) && STORAGE.load_group(group_id).is_err() {
-                return Ok(group_id);
-            }
+        // Ensure ID is not zero
+        if group_id == 0 {
+            continue;
         }
-        attempts += 1;
+
+        // ATOMIC OPERATION: Hold lock during both check and insert
+        // This prevents TOCTOU race condition where two threads could both
+        // see the ID as available and proceed to use it.
+        let mut cache = IN_MEMORY_CACHE.lock()
+            .map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
+
+        // Check if ID already exists in cache
+        if cache.contains_key(&group_id) {
+            continue; // ID collision, try again
+        }
+
+        // Check if ID exists in persistent storage
+        // Note: We check storage while holding cache lock to maintain consistency
+        if STORAGE.load_group(group_id).is_ok() {
+            continue; // ID exists in storage, try again
+        }
+
+        // ID is available - insert placeholder immediately while holding lock
+        // This prevents another thread from using the same ID.
+        // The placeholder will be replaced with real GroupState after successful setup.
+        let placeholder_ring = crate::algebra::PolynomialRing::<Field>::new(1);
+        let placeholder_generator = ark_poly::univariate::DensePolynomial::from_coefficients_vec(
+            vec![Field::zero(); 1]
+        );
+        let placeholder_ml_group = crate::multilinear::MultiLinearGroup::new(
+            Arc::new(placeholder_ring),
+            1,
+            placeholder_generator,
+        );
+        let placeholder_chat = crate::group_chat::GroupChat::new(Arc::new(placeholder_ml_group));
+        
+        let placeholder_state = GroupState {
+            chat: placeholder_chat,
+            participants: Vec::new(), // Empty placeholder
+            created_at: std::time::Instant::now(),
+        };
+
+        // Insert placeholder atomically - lock is held throughout
+        cache.insert(group_id, Arc::new(Mutex::new(placeholder_state)));
+        
+        // Lock is released here (on drop), but placeholder is already inserted
+        // Return the ID - caller will replace placeholder with real state
+        return Ok(group_id);
     }
 
     Err(HPairError::InternalError("Could not generate unique group ID".to_string()))

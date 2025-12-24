@@ -594,6 +594,7 @@ dependencies = [
  "aes-gcm",
  "ark-ff",
  "ark-poly",
+ "ark-serialize",
  "ark-std",
  "axum",
  "dirs",

@@ -78,6 +78,53 @@ impl GroupStorage {
         participants: Vec<String>,
         chat_state: &[u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Resource limit validation
+        // 1. Validate chat state size
+        if chat_state.len() > api::MAX_CHAT_STATE_SIZE {
+            return Err(format!(
+                "Chat state too large: {} bytes (max {} bytes)",
+                chat_state.len(),
+                api::MAX_CHAT_STATE_SIZE
+            ).into());
+        }
+
+        // 2. Validate participant count
+        if participants.len() > api::MAX_PARTICIPANTS {
+            return Err(format!(
+                "Too many participants: {} (max {})",
+                participants.len(),
+                api::MAX_PARTICIPANTS
+            ).into());
+        }
+
+        // 3. Calculate expected storage size for this group
+        let estimated_size = self.calculate_group_storage_size(&participants, chat_state.len());
+
+        // 4. Check if this would exceed per-group storage limit
+        if estimated_size > api::MAX_STORAGE_PER_GROUP {
+            return Err(format!(
+                "Storage quota exceeded: estimated {} bytes (max {} bytes per group)",
+                estimated_size,
+                api::MAX_STORAGE_PER_GROUP
+            ).into());
+        }
+
+        // 5. Check existing groups' storage (if group_id already exists, check current usage)
+        // This is efficient - we check cache first, then disk only if needed
+        if let Ok((existing_participants, existing_chat_state)) = self.load_group(group_id) {
+            let existing_size = self.calculate_group_storage_size(&existing_participants, existing_chat_state.len());
+            let new_size = self.calculate_group_storage_size(&participants, chat_state.len());
+            
+            // Allow update if new size doesn't exceed limit
+            if new_size > api::MAX_STORAGE_PER_GROUP {
+                return Err(format!(
+                    "Storage quota exceeded: {} bytes (max {} bytes per group)",
+                    new_size,
+                    api::MAX_STORAGE_PER_GROUP
+                ).into());
+            }
+        }
+
         // Generate encryption key for this group
         let mut group_key = [0u8; 32];
         OsRng.fill_bytes(&mut group_key);
@@ -285,6 +332,39 @@ impl GroupStorage {
         }
 
         Ok(())
+    }
+
+    /// Calculate estimated storage size for a group
+    ///
+    /// Estimates the total storage size including:
+    /// - Encrypted group data file
+    /// - Encryption key file
+    /// - JSON serialization overhead
+    /// - AES-GCM encryption overhead (nonce + tag)
+    ///
+    /// # Arguments
+    /// * `participants` - List of participant names
+    /// * `chat_state_size` - Size of encrypted chat state in bytes
+    ///
+    /// # Returns
+    /// Estimated total storage size in bytes
+    fn calculate_group_storage_size(&self, participants: &[String], chat_state_size: usize) -> usize {
+        // Estimate JSON serialization size
+        // GroupData structure overhead + participants + metadata
+        let metadata_overhead = 100; // group_id, created_at, nonce fields
+        let participants_json_size: usize = participants.iter()
+            .map(|p| p.len() + 4) // string length + quotes + comma
+            .sum();
+        
+        // AES-GCM overhead: 12-byte nonce + 16-byte authentication tag
+        let encryption_overhead = 12 + 16;
+        
+        // Total: JSON size + encryption overhead + key file
+        let json_size = metadata_overhead + participants_json_size + chat_state_size;
+        let encrypted_size = json_size + encryption_overhead;
+        let key_file_size = 32; // 256-bit key
+        
+        encrypted_size + key_file_size
     }
 
     /// Encrypt group data
