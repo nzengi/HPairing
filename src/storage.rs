@@ -34,6 +34,52 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Detailed storage error types for better error handling and debugging
+#[derive(Debug, Clone)]
+pub enum StorageError {
+    /// Authentication failed during decryption (possible tampering)
+    AuthenticationFailed,
+    /// Data is corrupted or malformed
+    DataCorrupted,
+    /// Key mismatch or invalid key
+    KeyMismatch,
+    /// File not found in storage
+    FileNotFound,
+    /// Permission denied for storage operation
+    PermissionDenied,
+    /// Storage quota exceeded
+    QuotaExceeded,
+    /// Invalid data format
+    InvalidData,
+    /// I/O error during storage operation
+    IoError(String),
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageError::AuthenticationFailed =>
+                write!(f, "Storage authentication failed - possible data tampering"),
+            StorageError::DataCorrupted =>
+                write!(f, "Storage data corrupted or malformed"),
+            StorageError::KeyMismatch =>
+                write!(f, "Key mismatch during decryption"),
+            StorageError::FileNotFound =>
+                write!(f, "Storage file not found"),
+            StorageError::PermissionDenied =>
+                write!(f, "Permission denied for storage operation"),
+            StorageError::QuotaExceeded =>
+                write!(f, "Storage quota exceeded"),
+            StorageError::InvalidData =>
+                write!(f, "Invalid data format"),
+            StorageError::IoError(msg) =>
+                write!(f, "I/O error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for StorageError {}
+
 /// Encrypted storage for group data
 pub struct GroupStorage {
     storage_dir: PathBuf,
@@ -201,7 +247,8 @@ impl GroupStorage {
         let encrypted_data = fs::read(&file_path)?;
         let group_key = fs::read(&key_path)?;
 
-        let group_data = self.decrypt_group_data(&encrypted_data, &group_key)?;
+        let group_data = self.decrypt_group_data(&encrypted_data, &group_key)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
         // Check if expired
         if self.is_group_expired(group_data.created_at)? {
@@ -387,22 +434,29 @@ impl GroupStorage {
     }
 
     /// Decrypt group data
-    fn decrypt_group_data(&self, encrypted_data: &[u8], key: &[u8]) -> Result<GroupData, Box<dyn std::error::Error>> {
+    fn decrypt_group_data(&self, encrypted_data: &[u8], key: &[u8]) -> Result<GroupData, StorageError> {
+        if key.len() != 32 {
+            return Err(StorageError::KeyMismatch);
+        }
+
         let key = Key::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
         if encrypted_data.len() < 12 {
-            return Err("Invalid encrypted data".into());
+            return Err(StorageError::InvalidData);
         }
 
         let nonce = Nonce::from_slice(&encrypted_data[..12]);
         let ciphertext = &encrypted_data[12..];
 
         let decrypted = cipher.decrypt(nonce, ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
+            .map_err(|_| StorageError::AuthenticationFailed)?;
 
-        let json_str = String::from_utf8(decrypted)?;
-        let data: GroupData = serde_json::from_str(&json_str)?;
+        let json_str = String::from_utf8(decrypted)
+            .map_err(|_| StorageError::DataCorrupted)?;
+
+        let data: GroupData = serde_json::from_str(&json_str)
+            .map_err(|_| StorageError::DataCorrupted)?;
 
         Ok(data)
     }

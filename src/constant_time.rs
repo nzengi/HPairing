@@ -125,6 +125,28 @@ pub fn ct_conditional_select<T: ConditionallySelectable>(condition: Choice, a: T
     ct_select(condition, a, b)
 }
 
+/// Constant-time conditional move for field elements
+///
+/// Specialized version of conditional selection optimized for field elements.
+/// Uses the underlying field arithmetic for constant-time operations.
+///
+/// # Arguments
+/// * `condition` - Condition to select on (Choice::from(1) = select a, Choice::from(0) = select b)
+/// * `a` - Value to select if condition is Choice::from(1) (true)
+/// * `b` - Value to select if condition is Choice::from(0) (false)
+///
+/// # Returns
+/// * Selected field element (a if condition is Choice::from(1), b if Choice::from(0))
+///
+/// # Security
+/// This function ensures that field element selection happens in constant time,
+/// preventing timing attacks that could leak information about secret coefficients.
+pub fn ct_field_select<F: ConditionallySelectable>(condition: Choice, a: F, b: F) -> F {
+    // Use the underlying conditional_select implementation
+    // This is guaranteed to be constant-time for ConditionallySelectable types
+    F::conditional_select(&b, &a, condition)
+}
+
 /// Constant-time check if a value is zero
 ///
 /// # Arguments
@@ -218,17 +240,17 @@ pub fn safe_array_access<T>(array: &[T], index: usize) -> Option<&T> {
     }
 }
 
-/// Constant-time polynomial coefficient access
+/// Constant-time polynomial coefficient access for ark_ff field elements
 ///
 /// Ensures polynomial coefficients are accessed in constant time to prevent
-/// cache-timing attacks. This function uses a constant-time bounds check
-/// before accessing the coefficient.
+/// cache-timing attacks. This function provides bounds-checked access with
+/// minimized timing variance for ark_ff field elements.
 ///
 /// # Implementation
 ///
-/// The bounds check is performed using constant-time comparison to minimize
-/// timing variance. The function returns None for out-of-bounds indices using
-/// the same code path timing as in-bounds access.
+/// For ark_ff field elements, this function uses bounds checking with
+/// constant-time comparison operations to minimize timing variance.
+/// The bounds check itself uses constant-time operations.
 ///
 /// # Arguments
 /// * `coeffs` - Polynomial coefficients slice
@@ -238,33 +260,22 @@ pub fn safe_array_access<T>(array: &[T], index: usize) -> Option<&T> {
 /// * `Option<&F>` - Some(coefficient) if index is valid, None otherwise
 ///
 /// # Security
-/// This function uses constant-time bounds checking. However, returning
-/// `Option<&T>` involves some branching. The bounds check itself is designed
-/// to minimize timing variance compared to direct array access.
+/// This function uses constant-time bounds checking. While it may have
+/// minimal timing variance compared to truly constant-time access patterns,
+/// it provides better security than direct array access for cryptographic contexts.
 pub fn ct_coeff_access<F>(coeffs: &[F], index: usize) -> Option<&F> {
+    // Constant-time bounds check using Choice operations
     let len = coeffs.len();
-    
-    // Constant-time bounds check using Choice
-    // Convert the bounds check to a Choice to enable constant-time operations
-    // Note: Converting usize comparison to Choice requires platform-specific
-    // code for true constant-time. For practical purposes, we minimize timing
-    // variance by using consistent comparison patterns.
-    
-    // For constant-time bounds checking, we want to avoid branches on the comparison
-    // However, on most platforms, usize comparison is already relatively constant-time
-    // We still use a pattern that minimizes variance
-    
-    // Check bounds: index < len
-    // Use constant-time comparison pattern
-    let in_bounds = index < len;
-    
-    // Access the element using conditional pattern to minimize timing variance
-    // We can't avoid the branch entirely, but we structure it to minimize variance
-    if in_bounds {
-        // Access element - this is the same code path timing as the else branch
+
+    // Use constant-time comparison for bounds checking
+    // This minimizes timing variance compared to direct comparison
+    let in_bounds_choice = ct_in_range(index as u64, 0, (len - 1) as u64);
+
+    // Convert Choice to bool for Option construction
+    // This introduces minimal timing variance but is acceptable
+    if in_bounds_choice.unwrap_u8() == 1 {
         Some(&coeffs[index])
     } else {
-        // Return None - structured to have similar timing characteristics
         None
     }
 }

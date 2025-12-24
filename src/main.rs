@@ -6,10 +6,11 @@ use axum::{
     Router,
 };
 use tower_http::cors::{CorsLayer, Any};
-use hpair::{calculate_quantum_resistance, create_group, destroy_group, send_encrypted_message, list_groups, get_group_info, GroupId, HPairError};
+use hpair::{calculate_quantum_resistance, create_group, destroy_group, send_encrypted_message, list_groups, get_group_info, get_metrics, GroupId, HPairError};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tracing_subscriber;
 
 #[derive(Deserialize)]
 struct CreateGroupRequest {
@@ -66,15 +67,15 @@ async fn create_group_handler(
     State(_state): State<Arc<()>>,
     Json(payload): Json<CreateGroupRequest>,
 ) -> Result<Json<CreateGroupResponse>, (StatusCode, Json<ErrorResponse>)> {
-    println!("📨 Received create_group request with {} participants", payload.participants.len());
+    tracing::debug!("📨 Received create_group request with {} participants", payload.participants.len());
 
     match create_group(payload.participants) {
         Ok(group_id) => {
-            println!("✅ Group created with ID: {}", group_id);
+            tracing::info!("✅ Group created with ID: {}", group_id);
             Ok(Json(CreateGroupResponse { group_id }))
         }
         Err(e) => {
-            println!("❌ Failed to create group: {}", e);
+            tracing::warn!("❌ Failed to create group: {}", e);
             Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -223,11 +224,39 @@ async fn health_check() -> &'static str {
     "HPair API Server is running! 🔒"
 }
 
+async fn metrics_handler() -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    match get_metrics() {
+        Ok(metrics) => Ok(metrics),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get metrics: {}", e),
+            }),
+        )),
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    println!("🚀 Starting HPair REST API Server...");
-    println!("🔒 Secure Multi-Linear Group Encryption with Quantum Resistance");
-    println!("📡 Server will be available at http://localhost:3000\n");
+    // Initialize tracing subscriber for structured logging
+    tracing_subscriber::fmt::init();
+
+    // Load configuration from environment variables
+    let config = match hpair::config::HpairConfig::from_env() {
+        Ok(config) => {
+            tracing::info!("Configuration loaded successfully");
+            config
+        }
+        Err(e) => {
+            tracing::error!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    tracing::info!("🚀 Starting HPair REST API Server...");
+    tracing::info!("🔒 Secure Multi-Linear Group Encryption with Quantum Resistance");
+    tracing::info!("📡 Server will be available at http://localhost:3000");
+    tracing::info!("📊 Metrics available at http://localhost:3000/metrics");
 
     let app_state = Arc::new(());
 
@@ -238,6 +267,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(health_check))
+        .route("/metrics", get(metrics_handler))
         .route("/groups", post(create_group_handler))
         .route("/groups", get(list_groups_handler)) // List all groups
         .route("/groups/:group_id/messages", post(send_message_handler))
@@ -248,13 +278,13 @@ async fn main() {
         .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    println!("🌐 Listening on {}", addr);
-    println!("📚 API Documentation:");
-    println!("  POST /groups - Create a new group");
-    println!("  POST /groups/:id/messages - Send encrypted message");
-    println!("  DELETE /groups/:id - Destroy group");
-    println!("  POST /quantum-resistance - Calculate quantum resistance");
-    println!();
+    tracing::info!("🌐 Listening on {}", addr);
+    tracing::info!("📚 API Documentation:");
+    tracing::info!("  POST /groups - Create a new group");
+    tracing::info!("  GET /metrics - Prometheus metrics");
+    tracing::info!("  POST /groups/:id/messages - Send encrypted message");
+    tracing::info!("  DELETE /groups/:id - Destroy group");
+    tracing::info!("  POST /quantum-resistance - Calculate quantum resistance");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

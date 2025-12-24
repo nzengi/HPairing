@@ -4,6 +4,15 @@
 //! This module contains all tunable parameters, cryptographic constants, and
 //! security thresholds used throughout the implementation.
 //!
+//! ## Configuration Management
+//!
+//! The system supports configuration via environment variables with the HPAIR_ prefix:
+//! - HPAIR_MAX_GROUPS: Maximum number of groups (default: 10000)
+//! - HPAIR_MAX_MESSAGE_LEN: Maximum message length in bytes (default: 65536)
+//! - HPAIR_GROUP_LIFETIME_SECS: Group lifetime in seconds (default: 86400)
+//! - HPAIR_STORAGE_DIR: Storage directory path
+//! - HPAIR_LOG_LEVEL: Log level (debug, info, warn, error)
+//!
 //! ## Security Considerations
 //!
 //! - All cryptographic parameters are chosen to provide at least 128-bit post-quantum security
@@ -19,6 +28,59 @@
 //! - Performance constraints
 //! - Memory limitations
 //! - Network bandwidth requirements
+
+use serde::Deserialize;
+use std::path::PathBuf;
+
+/// Runtime configuration for HPair
+#[derive(Debug, Deserialize, Clone)]
+pub struct HpairConfig {
+    /// Maximum number of groups allowed
+    pub max_groups: usize,
+    /// Maximum message length in bytes
+    pub max_message_len: usize,
+    /// Group lifetime in seconds
+    pub group_lifetime_secs: u64,
+    /// Storage directory path
+    pub storage_dir: PathBuf,
+    /// Log level (debug, info, warn, error)
+    pub log_level: String,
+}
+
+impl Default for HpairConfig {
+    fn default() -> Self {
+        Self {
+            max_groups: 10000,
+            max_message_len: 65536,
+            group_lifetime_secs: 86400, // 24 hours
+            storage_dir: PathBuf::from("./data"),
+            log_level: "info".to_string(),
+        }
+    }
+}
+
+impl HpairConfig {
+    /// Load configuration from environment variables
+    ///
+    /// Uses HPAIR_ prefix for environment variables.
+    /// Falls back to default values if not set.
+    pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        let mut config_builder = config::Config::builder()
+            .set_default("max_groups", 10000)?
+            .set_default("max_message_len", 65536)?
+            .set_default("group_lifetime_secs", 86400)?
+            .set_default("storage_dir", "./data")?
+            .set_default("log_level", "info")?;
+
+        // Load from environment variables with HPAIR_ prefix
+        config_builder = config_builder.add_source(
+            config::Environment::with_prefix("HPAIR").separator("_")
+        );
+
+        let config = config_builder.build()?;
+        Ok(config.try_deserialize()?)
+    }
+}
 
 /// Field parameters for the prime field
 pub mod field {

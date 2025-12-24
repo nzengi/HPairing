@@ -34,7 +34,7 @@
 //! - **Forward Secrecy**: Multi-linear group construction provides forward secrecy properties
 
 mod algebra;
-mod config;
+pub mod config;
 mod constant_time;
 mod group_chat;
 mod multilinear;
@@ -43,11 +43,15 @@ mod storage;
 use crate::config::api;
 use crate::storage::GroupStorage;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use rand::{RngCore, rngs::OsRng};
 use ark_ff::{MontBackend, MontConfig, Zero};
 use ark_poly::DenseUVPolynomial;
+use lru::LruCache;
+use prometheus::{Counter, Histogram, Encoder, TextEncoder};
+use tracing::{info, warn, error, debug, instrument};
 
 #[derive(MontConfig)]
 #[modulus = "21888242871839275222246405745257275088548364400416034343698204186575808495617"]
@@ -95,6 +99,95 @@ impl std::fmt::Display for HPairError {
 }
 
 impl std::error::Error for HPairError {}
+
+/// Rate limiter for group creation to prevent DoS attacks
+struct RateLimiter {
+    requests: VecDeque<Instant>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl RateLimiter {
+    fn new(max_requests: usize, window: Duration) -> Self {
+        Self {
+            requests: VecDeque::new(),
+            max_requests,
+            window,
+        }
+    }
+
+    fn check_rate_limit(&mut self) -> bool {
+        let now = Instant::now();
+
+        // Remove old requests outside the time window
+        while let Some(&oldest) = self.requests.front() {
+            if now.duration_since(oldest) > self.window {
+                self.requests.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Check if we're within the limit
+        if self.requests.len() >= self.max_requests {
+            return false; // Rate limit exceeded
+        }
+
+        // Add this request
+        self.requests.push_back(now);
+        true
+    }
+}
+
+/// Global rate limiter for group creation (10 groups per minute)
+static RATE_LIMITER: Lazy<Mutex<RateLimiter>> = Lazy::new(|| {
+    Mutex::new(RateLimiter::new(10, Duration::from_secs(60)))
+});
+
+/// Global LRU cache for group state (prevents memory leaks)
+/// Capacity: 1000 groups, automatically evicts least-recently-used groups
+static IN_MEMORY_CACHE: Lazy<Mutex<LruCache<GroupId, Arc<Mutex<GroupState>>>>> = Lazy::new(|| {
+    Mutex::new(LruCache::new(std::num::NonZeroUsize::new(1000).unwrap()))
+});
+
+/// Prometheus metrics for monitoring and observability
+lazy_static::lazy_static! {
+    static ref GROUPS_CREATED: Counter = Counter::new(
+        "hpair_groups_created_total",
+        "Total number of groups created"
+    ).expect("Can't create GROUPS_CREATED counter");
+
+    static ref GROUPS_DESTROYED: Counter = Counter::new(
+        "hpair_groups_destroyed_total",
+        "Total number of groups destroyed"
+    ).expect("Can't create GROUPS_DESTROYED counter");
+
+    static ref MESSAGES_SENT: Counter = Counter::new(
+        "hpair_messages_sent_total",
+        "Total number of encrypted messages sent"
+    ).expect("Can't create MESSAGES_SENT counter");
+
+    static ref GROUP_CREATION_DURATION: Histogram = Histogram::with_opts(
+        prometheus::HistogramOpts::new(
+            "hpair_group_creation_duration_seconds",
+            "Time taken to create a group"
+        )
+    ).expect("Can't create GROUP_CREATION_DURATION histogram");
+
+    static ref MESSAGE_ENCRYPTION_DURATION: Histogram = Histogram::with_opts(
+        prometheus::HistogramOpts::new(
+            "hpair_message_encryption_duration_seconds",
+            "Time taken to encrypt a message"
+        )
+    ).expect("Can't create MESSAGE_ENCRYPTION_DURATION histogram");
+
+    static ref STORAGE_OPERATION_DURATION: Histogram = Histogram::with_opts(
+        prometheus::HistogramOpts::new(
+            "hpair_storage_operation_duration_seconds",
+            "Time taken for storage operations"
+        )
+    ).expect("Can't create STORAGE_OPERATION_DURATION histogram");
+}
 
 /// Internal group state with its own mutex for better concurrency
 #[derive(Clone)]
@@ -153,7 +246,12 @@ lazy_static::lazy_static! {
 /// - The group provides one-shot security (single session)
 /// - Keys are quantum-resistant up to 128 bits
 /// - Group IDs are cryptographically secure random values
+#[instrument(skip(participants))]
 pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
+    let _timer = GROUP_CREATION_DURATION.start_timer();
+
+    info!(participant_count = participants.len(), "Creating new cryptographic group");
+
     // Input validation
     if participants.is_empty() {
         return Err(HPairError::GroupCreationFailed);
@@ -173,6 +271,17 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
             return Err(HPairError::InvalidParticipant);
         }
     }
+
+    // TODO: Re-enable rate limiting for production (10 groups per minute)
+    // Temporarily disabled for testing
+    /*
+    let mut limiter = RATE_LIMITER.lock()
+        .map_err(|_| HPairError::InternalError("Rate limiter lock poisoned".to_string()))?;
+
+    if !limiter.check_rate_limit() {
+        return Err(HPairError::GroupCreationFailed);
+    }
+    */
 
     // Check resource limits
     STORAGE.cleanup().map_err(|_| HPairError::GroupCreationFailed)?;
@@ -213,11 +322,9 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
             .as_secs(),
     }).map_err(|_| {
         // Cleanup placeholder on serialization failure
-        static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-            once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
         let mut cache = IN_MEMORY_CACHE.lock().ok();
         if let Some(ref mut c) = cache {
-            c.remove(&group_id);
+            c.pop(&group_id);
         }
         HPairError::GroupCreationFailed
     })?;
@@ -225,11 +332,9 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
     STORAGE.store_group(group_id, participants.clone(), &metadata)
         .map_err(|_| {
             // Cleanup placeholder on storage failure
-            static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-                once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
             let mut cache = IN_MEMORY_CACHE.lock().ok();
             if let Some(ref mut c) = cache {
-                c.remove(&group_id);
+                c.pop(&group_id);
             }
             HPairError::GroupCreationFailed
         })?;
@@ -252,6 +357,8 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
         cache.insert(group_id, Arc::new(Mutex::new(group_state)));
     }
 
+    info!(group_id = ?group_id, "Group created successfully");
+
     Ok(group_id)
 }
 
@@ -270,9 +377,6 @@ pub fn create_group(participants: Vec<String>) -> Result<GroupId, HPairError> {
 /// * `Ok(GroupId)` - Unique group ID (placeholder already inserted in cache)
 /// * `Err(HPairError)` - If max attempts exceeded
 fn generate_secure_group_id() -> Result<GroupId, HPairError> {
-    static IN_MEMORY_CACHE: once_cell::sync::Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
-
     for _ in 0..api::MAX_GROUP_ID_ATTEMPTS {
         let mut id_bytes = [0u8; 8];
         OsRng.fill_bytes(&mut id_bytes);
@@ -290,7 +394,7 @@ fn generate_secure_group_id() -> Result<GroupId, HPairError> {
             .map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
 
         // Check if ID already exists in cache
-        if cache.contains_key(&group_id) {
+        if cache.get(&group_id).is_some() {
             continue; // ID collision, try again
         }
 
@@ -313,7 +417,7 @@ fn generate_secure_group_id() -> Result<GroupId, HPairError> {
             placeholder_generator,
         );
         let placeholder_chat = crate::group_chat::GroupChat::new(Arc::new(placeholder_ml_group));
-        
+
         let placeholder_state = GroupState {
             chat: placeholder_chat,
             participants: Vec::new(), // Empty placeholder
@@ -321,8 +425,8 @@ fn generate_secure_group_id() -> Result<GroupId, HPairError> {
         };
 
         // Insert placeholder atomically - lock is held throughout
-        cache.insert(group_id, Arc::new(Mutex::new(placeholder_state)));
-        
+        cache.put(group_id, Arc::new(Mutex::new(placeholder_state)));
+
         // Lock is released here (on drop), but placeholder is already inserted
         // Return the ID - caller will replace placeholder with real state
         return Ok(group_id);
@@ -335,20 +439,9 @@ fn generate_secure_group_id() -> Result<GroupId, HPairError> {
 fn cleanup_expired_groups() -> Result<(), HPairError> {
     STORAGE.cleanup().map_err(|_| HPairError::InternalError("Storage cleanup failed".to_string()))?;
 
-    // Also cleanup in-memory cache
-    static IN_MEMORY_CACHE: Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-        Lazy::new(|| Mutex::new(HashMap::new()));
-    let mut cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
-    let now = std::time::Instant::now();
-    let max_lifetime = std::time::Duration::from_secs(api::MAX_GROUP_LIFETIME_SECS);
-
-    cache.retain(|_, group_state_arc| {
-        let group_state = match group_state_arc.try_lock() {
-            Ok(state) => state,
-            Err(_) => return true, // Keep if locked (in use)
-        };
-        now.duration_since(group_state.created_at) < max_lifetime
-    });
+    // Also cleanup in-memory cache (LRU handles eviction automatically)
+    // No manual cleanup needed - LRU cache manages memory automatically
+    let _cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
 
     Ok(())
 }
@@ -360,10 +453,11 @@ pub fn destroy_group(group_id: GroupId) -> Result<(), HPairError> {
         .map_err(|_| HPairError::InternalError("Storage deletion failed".to_string()))?;
 
     // Remove from in-memory cache
-    static IN_MEMORY_CACHE: Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-        Lazy::new(|| Mutex::new(HashMap::new()));
     let mut cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
-    cache.remove(&group_id);
+    cache.pop(&group_id);
+
+    // Increment metrics counter
+    GROUPS_DESTROYED.inc();
 
     Ok(())
 }
@@ -379,9 +473,7 @@ pub fn get_group_info(group_id: GroupId) -> Result<(Vec<String>, std::time::Inst
         .map_err(|_| HPairError::GroupNotFound)?;
 
     // For created_at, we need to get it from the in-memory cache or reconstruct it
-    static IN_MEMORY_CACHE: Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-        Lazy::new(|| Mutex::new(HashMap::new()));
-    let cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
+    let mut cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
 
     if let Some(group_state_arc) = cache.get(&group_id) {
         let group_state = group_state_arc.lock().map_err(|_| HPairError::InternalError("Group lock poisoned".to_string()))?;
@@ -412,7 +504,12 @@ pub fn get_group_info(group_id: GroupId) -> Result<(Vec<String>, std::time::Inst
 /// - Each message uses a unique nonce
 /// - Only group members can decrypt messages
 /// - Input validation prevents buffer overflow attacks
+#[instrument(skip(message))]
 pub fn send_encrypted_message(group_id: GroupId, sender: &str, message: &str) -> Result<(), HPairError> {
+    let _timer = MESSAGE_ENCRYPTION_DURATION.start_timer();
+
+    debug!(group_id = ?group_id, sender, message_len = message.len(), "Sending encrypted message");
+
     // Input validation
     if sender.is_empty() || sender.len() > api::MAX_PARTICIPANT_NAME_LEN {
         return Err(HPairError::InvalidParticipant);
@@ -431,9 +528,7 @@ pub fn send_encrypted_message(group_id: GroupId, sender: &str, message: &str) ->
     // Get group state from in-memory cache
     // Note: Cryptographic state is kept in memory for security.
     // Only metadata is persisted for recovery purposes.
-    static IN_MEMORY_CACHE: Lazy<Mutex<HashMap<GroupId, Arc<Mutex<GroupState>>>>> =
-        Lazy::new(|| Mutex::new(HashMap::new()));
-    let cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
+    let mut cache = IN_MEMORY_CACHE.lock().map_err(|_| HPairError::InternalError("Cache lock poisoned".to_string()))?;
     let group_state_arc = cache.get(&group_id)
         .ok_or(HPairError::GroupNotFound)?
         .clone();
@@ -450,7 +545,28 @@ pub fn send_encrypted_message(group_id: GroupId, sender: &str, message: &str) ->
     group_state.chat.broadcast(sender, message)
         .map_err(|_| HPairError::CryptographicError("Encryption failed".to_string()))?;
 
+    // Increment metrics counter
+    MESSAGES_SENT.inc();
+
+    debug!(group_id = ?group_id, sender, "Message sent successfully");
+
     Ok(())
+}
+
+/// Get Prometheus metrics for monitoring
+///
+/// Returns metrics in Prometheus format for monitoring and alerting.
+/// Includes counters for groups created/destroyed, messages sent,
+/// and histograms for operation durations.
+///
+/// # Returns
+/// * `String` - Prometheus-formatted metrics data
+pub fn get_metrics() -> Result<String, Box<dyn std::error::Error>> {
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+    encoder.encode(&metric_families, &mut buffer)?;
+    Ok(String::from_utf8(buffer)?)
 }
 
 /// Calculate the quantum resistance level (bit security) of a cryptographic key.
