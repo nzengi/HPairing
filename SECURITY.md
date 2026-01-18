@@ -2,14 +2,13 @@
 
 ## 🔐 Security Model
 
-HPair implements a **Non-Interactive Key Exchange (NIKE)** protocol based on multi-linear group constructions over polynomial rings. The security relies on the hardness of certain algebraic problems in finite fields.
+HPair implements an **MLS-style Ratchet Tree** protocol for group key establishment. The security relies on the hardness of the Elliptic Curve Diffie-Hellman (ECDH) problem using Curve25519.
 
 ### Security Assumptions
 
-1. **Discrete Logarithm Assumption** in the polynomial ring
-2. **Multilinear Diffie-Hellman Assumption**
-3. **Random Oracle Model** for HKDF hash function
-4. **IND-CCA2 Security** of AES-GCM
+1. **Computational Diffie-Hellman (CDH)** hardness on Curve25519
+2. **Random Oracle Model** for SHA-256 key derivation
+3. **IND-CCA2 Security** of AES-GCM-256
 
 ## 🎯 Threat Model
 
@@ -22,115 +21,158 @@ HPair implements a **Non-Interactive Key Exchange (NIKE)** protocol based on mul
 
 #### 2. Active Man-in-the-Middle
 
-- **Mitigation**: NIKE protocol provides authenticated key establishment
-- **Assurance**: Group membership is cryptographically verified
+- **Mitigation**: Tree-based key agreement requires possession of private keys
+- **Assurance**: Only legitimate group members can derive the group secret
 
-#### 3. Key Compromise
+#### 3. Key Compromise (Forward Secrecy)
 
-- **Mitigation**: Forward secrecy through one-shot key establishment
-- **Assurance**: Each group session uses fresh key material
+- **Mitigation**: Full tree refresh when members are removed
+- **Assurance**: Compromised keys don't reveal past session keys
 
 #### 4. Side-Channel Attacks
 
-- **Mitigation**: Constant-time field operations, no timing leaks
-- **Assurance**: All cryptographic primitives use constant-time algorithms
+- **Mitigation**: Constant-time X25519 operations via x25519-dalek
+- **Assurance**: Library uses constant-time implementations
 
-#### 5. Algebraic Attacks
+#### 5. Member Removal Security
 
-- **Mitigation**: Large field size (64-bit prime), proper modular arithmetic
-- **Assurance**: Field operations maintain algebraic security properties
+- **Mitigation**: Complete key refresh using fresh randomness
+- **Assurance**: Removed members cannot decrypt future messages
+
+## 🌳 Tree-based Key Agreement Security
+
+### How It Works
+
+```
+        [Root: Group Secret]
+              /          \
+        [DH(L,R)]      [DH(L,R)]
+         /    \          /    \
+      Alice  Bob      Carol  Dave
+       sk    sk        sk     sk
+```
+
+### Security Properties
+
+| Property | Guarantee |
+|----------|-----------|
+| **Confidentiality** | Only members with private keys can derive group secret |
+| **Forward Secrecy** | Tree refresh on member removal prevents past key derivation |
+| **Key Independence** | Different groups have independent keys |
+| **Efficient Updates** | O(log n) operations maintain security during changes |
+
+### Why Public Keys Alone Are Insufficient
+
+In the ratchet tree, internal nodes are computed as:
+
+```
+internal_node = DH(left_child_sk, right_child_pk)
+```
+
+This requires possession of at least one child's **private key**. An attacker with only public keys cannot compute the DH result or derive the group secret.
+
+## 📊 Security Parameters
+
+| Parameter | Value | Security Level | Rationale |
+|-----------|-------|----------------|-----------|
+| Key Exchange | X25519 | 128-bit | ECDH on Curve25519 |
+| Encryption | AES-GCM-256 | 256-bit | NIST recommended |
+| Key Derivation | SHA-256 | 256-bit | Collision resistant |
+| Nonce Size | 96-bit | 128-bit | GCM security bound |
 
 ## 🔍 Security Audit Markers
 
 ### Critical Security Points
 
 ```rust
+// SECURITY: Each participant generates their own keypair
+let secret = StaticSecret::random_from_rng(OsRng);
+let public = PublicKey::from(&secret);
+```
+
+```rust
+// SECURITY: Internal nodes require private key for DH
+let shared_secret = left_sk.diffie_hellman(right_pk);
+```
+
+```rust
+// SECURITY: Tree refresh on member removal (forward secrecy)
+fn refresh_tree(&mut self) {
+    // Re-randomize all leaves with new keys
+    for leaf in leaves {
+        leaf.private_key = StaticSecret::random_from_rng(OsRng);
+    }
+    self.rebuild_internal_nodes();
+}
+```
+
+```rust
 // SECURITY: Generate cryptographically secure random nonce
-// AUDIT: Ensures AES-GCM nonce uniqueness - critical for IND-CCA2 security
 let mut nonce_bytes = [0u8; 12];
 OsRng.fill_bytes(&mut nonce_bytes);
 ```
-
-```rust
-// SECURITY: HKDF key derivation provides forward secrecy and key separation
-// AUDIT: Ensures cryptographically strong key material from polynomial encodings
-// THREAT: Weak input entropy could compromise key strength
-let hkdf = Hkdf::<Sha3_256>::new(None, &input_key_material);
-```
-
-```rust
-// SECURITY: Modular reduction prevents coefficient growth attacks
-// AUDIT: Ring arithmetic maintains algebraic structure for cryptographic security
-let target_idx = (i + j) % degree; // Direct modular reduction
-```
-
-## 📊 Security Parameters
-
-| Parameter      | Value      | Security Level | Rationale                          |
-| -------------- | ---------- | -------------- | ---------------------------------- |
-| Field Size     | 2^64 prime | 128-bit        | Post-quantum security margin       |
-| AES Mode       | GCM-256    | 256-bit        | NIST recommended                   |
-| Key Derivation | HKDF-SHA3  | 256-bit        | Strong KDF with quantum resistance |
-| Nonce Size     | 96-bit     | 128-bit        | GCM security bound                 |
-| Ring Degree    | 16         | 128-bit        | Algebraic security                 |
 
 ## 🧪 Security Testing
 
 ### Automated Tests
 
 ```bash
-# Run security-focused unit tests
-cargo test --test unit_tests -- --test-threads=1
+# Run all security-focused tests
+cargo test
 
-# Run cryptographic primitive tests
-cargo test security_primitives
+# Run ratchet tree tests
+cargo test ratchet_tree
 
-# Run validation tests
-cargo test input_validation
+# Verify forward secrecy
+cargo test test_remove_member
 ```
 
 ### Security Test Coverage
 
-- ✅ **Key Generation**: Entropy and uniqueness testing
-- ✅ **Encryption/Decryption**: Ciphertext indistinguishability
-- ✅ **Key Derivation**: HKDF correctness and strength
+- ✅ **Key Generation**: X25519 keypair generation
+- ✅ **DH Computation**: Correct shared secret derivation
+- ✅ **Tree Construction**: Proper internal node computation
+- ✅ **Forward Secrecy**: Key change on member removal
+- ✅ **Serialization**: Round-trip preserves security properties
 - ✅ **Input Validation**: Bounds checking and sanitization
 - ✅ **Error Handling**: No information leakage through errors
-- ✅ **Memory Safety**: No buffer overflows or use-after-free
 
 ## 🚨 Known Limitations
 
 ### Current Limitations
 
-1. **No Formal Proof**: Implementation is based on heuristic security arguments
-2. **Limited Side-Channel Protection**: No cache-timing attack countermeasures
-3. **No Quantum Resistance Guarantee**: Based on classical cryptographic assumptions
-4. **Performance Trade-offs**: Security parameters chosen for reasonable performance
+1. **Server Key Knowledge**: In the current implementation, the server generates and stores all private keys. For true E2E encryption, participants should generate keys client-side.
+
+2. **No Authentication**: REST API lacks authentication - anyone can access endpoints.
+
+3. **No Message Signing**: Messages are encrypted but not signed - no non-repudiation.
+
+4. **Synchronous Tree Updates**: All members must be online for tree updates (not fully async).
 
 ### Future Security Enhancements
 
-- [ ] Formal security proof in the Generic Group Model
-- [ ] Post-quantum key exchange integration
+- [ ] Client-side key generation
+- [ ] API authentication (JWT/API keys)
+- [ ] Message signing for non-repudiation
+- [ ] Asynchronous tree update protocol
 - [ ] Hardware security module (HSM) support
-- [ ] Formal verification with cryptographic proof assistants
 
 ## 📞 Security Contact
 
 For security vulnerabilities or concerns:
 
 1. **DO NOT** create public GitHub issues for security problems
-2. Email security concerns to: security@hyperpairing.dev
-3. Use PGP encryption when reporting sensitive issues
-4. Allow 48 hours for initial response
+2. Email security concerns to: howyaniii@gmail.com
+3. Allow 48 hours for initial response
 
 ## 🔄 Security Updates
 
 ### Version Security Status
 
-| Version | Status    | Known Issues | Recommended Action |
-| ------- | --------- | ------------ | ------------------ |
-| 0.1.0   | 🟡 Beta   | None known   | Research use only  |
-| 1.0.0   | 🟢 Stable | None         | Production ready   |
+| Version | Status | Known Issues | Recommended Action |
+|---------|--------|--------------|-------------------|
+| 0.1.4 | 🟡 Beta | Server stores keys | Research use only |
+| 1.0.0 | 🟢 Planned | - | Production ready |
 
 ### Security Update Process
 
@@ -141,20 +183,20 @@ For security vulnerabilities or concerns:
 
 ## 📚 Security References
 
-- [NIST SP 800-57: Recommendation for Key Management](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf)
+- [RFC 7748: Elliptic Curves for Security (X25519)](https://tools.ietf.org/html/rfc7748)
+- [RFC 9420: Messaging Layer Security (MLS)](https://datatracker.ietf.org/doc/html/rfc9420)
 - [NIST SP 800-38D: GCM Mode](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistsp800-38d.pdf)
-- [RFC 5869: HKDF](https://tools.ietf.org/html/rfc5869)
-- [Multilinear Groups Paper](https://eprint.iacr.org/) (Reference implementation)
 
 ## ✅ Security Checklist
 
+- [x] X25519 for key exchange (well-studied, constant-time)
+- [x] AES-GCM-256 for encryption (NIST approved)
+- [x] SHA-256 for key derivation
 - [x] Cryptographically secure random number generation
-- [x] Proper key derivation and management
+- [x] Forward secrecy via tree refresh
 - [x] Input validation and sanitization
-- [x] Constant-time cryptographic operations
-- [x] Comprehensive error handling
 - [x] Memory safety (Rust guarantees)
 - [x] No hardcoded secrets or keys
-- [x] Proper entropy estimation
-- [x] Side-channel attack considerations
-- [x] Formal security parameter selection
+- [ ] Client-side key generation (planned)
+- [ ] API authentication (planned)
+- [ ] Message signing (planned)
