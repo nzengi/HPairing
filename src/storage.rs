@@ -25,8 +25,11 @@
 
 use crate::config::api;
 use crate::constant_time;
-use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
-use rand::{RngCore, rngs::OsRng};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Key, Nonce,
+};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -58,22 +61,16 @@ pub enum StorageError {
 impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StorageError::AuthenticationFailed =>
-                write!(f, "Storage authentication failed - possible data tampering"),
-            StorageError::DataCorrupted =>
-                write!(f, "Storage data corrupted or malformed"),
-            StorageError::KeyMismatch =>
-                write!(f, "Key mismatch during decryption"),
-            StorageError::FileNotFound =>
-                write!(f, "Storage file not found"),
-            StorageError::PermissionDenied =>
-                write!(f, "Permission denied for storage operation"),
-            StorageError::QuotaExceeded =>
-                write!(f, "Storage quota exceeded"),
-            StorageError::InvalidData =>
-                write!(f, "Invalid data format"),
-            StorageError::IoError(msg) =>
-                write!(f, "I/O error: {}", msg),
+            StorageError::AuthenticationFailed => {
+                write!(f, "Storage authentication failed - possible data tampering")
+            }
+            StorageError::DataCorrupted => write!(f, "Storage data corrupted or malformed"),
+            StorageError::KeyMismatch => write!(f, "Key mismatch during decryption"),
+            StorageError::FileNotFound => write!(f, "Storage file not found"),
+            StorageError::PermissionDenied => write!(f, "Permission denied for storage operation"),
+            StorageError::QuotaExceeded => write!(f, "Storage quota exceeded"),
+            StorageError::InvalidData => write!(f, "Invalid data format"),
+            StorageError::IoError(msg) => write!(f, "I/O error: {}", msg),
         }
     }
 }
@@ -102,6 +99,8 @@ struct GroupData {
     created_at: u64, // Unix timestamp
     encrypted_chat_state: Vec<u8>,
     nonce: Vec<u8>,
+    /// The derived shared secret for the group (32 bytes for AES-256)
+    shared_secret: Option<Vec<u8>>,
 }
 
 impl GroupStorage {
@@ -123,6 +122,7 @@ impl GroupStorage {
         group_id: u64,
         participants: Vec<String>,
         chat_state: &[u8],
+        shared_secret: Option<Vec<u8>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Resource limit validation
         // 1. Validate chat state size
@@ -131,7 +131,8 @@ impl GroupStorage {
                 "Chat state too large: {} bytes (max {} bytes)",
                 chat_state.len(),
                 api::MAX_CHAT_STATE_SIZE
-            ).into());
+            )
+            .into());
         }
 
         // 2. Validate participant count
@@ -140,7 +141,8 @@ impl GroupStorage {
                 "Too many participants: {} (max {})",
                 participants.len(),
                 api::MAX_PARTICIPANTS
-            ).into());
+            )
+            .into());
         }
 
         // 3. Calculate expected storage size for this group
@@ -152,22 +154,25 @@ impl GroupStorage {
                 "Storage quota exceeded: estimated {} bytes (max {} bytes per group)",
                 estimated_size,
                 api::MAX_STORAGE_PER_GROUP
-            ).into());
+            )
+            .into());
         }
 
         // 5. Check existing groups' storage (if group_id already exists, check current usage)
         // This is efficient - we check cache first, then disk only if needed
-        if let Ok((existing_participants, existing_chat_state)) = self.load_group(group_id) {
-            let existing_size = self.calculate_group_storage_size(&existing_participants, existing_chat_state.len());
+        if let Ok((existing_participants, existing_chat_state, _)) = self.load_group(group_id) {
+            let existing_size = self
+                .calculate_group_storage_size(&existing_participants, existing_chat_state.len());
             let new_size = self.calculate_group_storage_size(&participants, chat_state.len());
-            
+
             // Allow update if new size doesn't exceed limit
             if new_size > api::MAX_STORAGE_PER_GROUP {
                 return Err(format!(
                     "Storage quota exceeded: {} bytes (max {} bytes per group)",
                     new_size,
                     api::MAX_STORAGE_PER_GROUP
-                ).into());
+                )
+                .into());
             }
         }
 
@@ -176,9 +181,7 @@ impl GroupStorage {
         OsRng.fill_bytes(&mut group_key);
 
         // Create group data
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
+        let created_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
         let group_data = GroupData {
             group_id,
@@ -186,14 +189,21 @@ impl GroupStorage {
             created_at,
             encrypted_chat_state: chat_state.to_vec(),
             nonce: vec![], // Will be set during encryption
+            shared_secret,
         };
 
         // Encrypt the group data
         let encrypted_data = self.encrypt_group_data(&group_data, &group_key)?;
 
         // Store encrypted data
-        let file_path = self.storage_dir.join("groups").join(format!("{}.group", group_id));
-        let key_path = self.storage_dir.join("keys").join(format!("{}.key", group_id));
+        let file_path = self
+            .storage_dir
+            .join("groups")
+            .join(format!("{}.group", group_id));
+        let key_path = self
+            .storage_dir
+            .join("keys")
+            .join(format!("{}.key", group_id));
 
         // Atomic write: write to temp file first, then rename
         let temp_file = file_path.with_extension("tmp");
@@ -207,19 +217,26 @@ impl GroupStorage {
 
         // Update cache
         let mut cache = self.cache.lock().unwrap();
-        cache.insert(group_id, Arc::new(Mutex::new(CachedGroup {
-            data: group_data,
-            key: group_key.to_vec(),
-            last_accessed: SystemTime::now(),
-            file_path,
-            key_path,
-        })));
+        cache.insert(
+            group_id,
+            Arc::new(Mutex::new(CachedGroup {
+                data: group_data,
+                key: group_key.to_vec(),
+                last_accessed: SystemTime::now(),
+                file_path,
+                key_path,
+            })),
+        );
 
         Ok(())
     }
 
     /// Load a group from storage
-    pub fn load_group(&self, group_id: u64) -> Result<(Vec<String>, Vec<u8>), Box<dyn std::error::Error>> {
+    /// Returns (participants, chat_state, shared_secret)
+    pub fn load_group(
+        &self,
+        group_id: u64,
+    ) -> Result<(Vec<String>, Vec<u8>, Option<Vec<u8>>), Box<dyn std::error::Error>> {
         // Check cache first
         {
             let cache = self.cache.lock().unwrap();
@@ -232,13 +249,23 @@ impl GroupStorage {
                     return Err("Group has expired".into());
                 }
 
-                return Ok((cached_group.data.participants.clone(), cached_group.data.encrypted_chat_state.clone()));
+                return Ok((
+                    cached_group.data.participants.clone(),
+                    cached_group.data.encrypted_chat_state.clone(),
+                    cached_group.data.shared_secret.clone(),
+                ));
             }
         }
 
         // Load from disk
-        let file_path = self.storage_dir.join("groups").join(format!("{}.group", group_id));
-        let key_path = self.storage_dir.join("keys").join(format!("{}.key", group_id));
+        let file_path = self
+            .storage_dir
+            .join("groups")
+            .join(format!("{}.group", group_id));
+        let key_path = self
+            .storage_dir
+            .join("keys")
+            .join(format!("{}.key", group_id));
 
         if !file_path.exists() || !key_path.exists() {
             return Err("Group not found".into());
@@ -247,7 +274,8 @@ impl GroupStorage {
         let encrypted_data = fs::read(&file_path)?;
         let group_key = fs::read(&key_path)?;
 
-        let group_data = self.decrypt_group_data(&encrypted_data, &group_key)
+        let group_data = self
+            .decrypt_group_data(&encrypted_data, &group_key)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
         // Check if expired
@@ -260,15 +288,22 @@ impl GroupStorage {
 
         // Cache the loaded group
         let mut cache = self.cache.lock().unwrap();
-        cache.insert(group_id, Arc::new(Mutex::new(CachedGroup {
-            data: group_data.clone(),
-            key: group_key,
-            last_accessed: SystemTime::now(),
-            file_path,
-            key_path,
-        })));
+        cache.insert(
+            group_id,
+            Arc::new(Mutex::new(CachedGroup {
+                data: group_data.clone(),
+                key: group_key,
+                last_accessed: SystemTime::now(),
+                file_path,
+                key_path,
+            })),
+        );
 
-        Ok((group_data.participants, group_data.encrypted_chat_state))
+        Ok((
+            group_data.participants,
+            group_data.encrypted_chat_state,
+            group_data.shared_secret,
+        ))
     }
 
     /// Delete a group
@@ -280,8 +315,14 @@ impl GroupStorage {
         }
 
         // Remove from disk
-        let file_path = self.storage_dir.join("groups").join(format!("{}.group", group_id));
-        let key_path = self.storage_dir.join("keys").join(format!("{}.key", group_id));
+        let file_path = self
+            .storage_dir
+            .join("groups")
+            .join(format!("{}.group", group_id));
+        let key_path = self
+            .storage_dir
+            .join("keys")
+            .join(format!("{}.key", group_id));
 
         let _ = fs::remove_file(file_path); // Ignore errors
         let _ = fs::remove_file(key_path); // Ignore errors
@@ -326,8 +367,11 @@ impl GroupStorage {
     }
 
     /// Get group info
-    pub fn get_group_info(&self, group_id: u64) -> Result<(Vec<String>, u64), Box<dyn std::error::Error>> {
-        let (participants, _) = self.load_group(group_id)?;
+    pub fn get_group_info(
+        &self,
+        group_id: u64,
+    ) -> Result<(Vec<String>, u64), Box<dyn std::error::Error>> {
+        let (participants, _, _) = self.load_group(group_id)?;
         let created_at = {
             let cache = self.cache.lock().unwrap();
             if let Some(cached) = cache.get(&group_id) {
@@ -362,12 +406,11 @@ impl GroupStorage {
         if cache.len() > api::MAX_GROUPS {
             // Remove oldest accessed groups
             let mut groups_by_access: Vec<_> = cache.iter().collect();
-            groups_by_access.sort_by_key(|(_, cached)| {
-                cached.lock().unwrap().last_accessed
-            });
+            groups_by_access.sort_by_key(|(_, cached)| cached.lock().unwrap().last_accessed);
 
             let excess = cache.len() - api::MAX_GROUPS;
-            let groups_to_remove: Vec<_> = groups_by_access.into_iter()
+            let groups_to_remove: Vec<_> = groups_by_access
+                .into_iter()
                 .take(excess)
                 .map(|(group_id, _)| *group_id)
                 .collect();
@@ -395,27 +438,36 @@ impl GroupStorage {
     ///
     /// # Returns
     /// Estimated total storage size in bytes
-    fn calculate_group_storage_size(&self, participants: &[String], chat_state_size: usize) -> usize {
+    fn calculate_group_storage_size(
+        &self,
+        participants: &[String],
+        chat_state_size: usize,
+    ) -> usize {
         // Estimate JSON serialization size
         // GroupData structure overhead + participants + metadata
         let metadata_overhead = 100; // group_id, created_at, nonce fields
-        let participants_json_size: usize = participants.iter()
+        let participants_json_size: usize = participants
+            .iter()
             .map(|p| p.len() + 4) // string length + quotes + comma
             .sum();
-        
+
         // AES-GCM overhead: 12-byte nonce + 16-byte authentication tag
         let encryption_overhead = 12 + 16;
-        
+
         // Total: JSON size + encryption overhead + key file
         let json_size = metadata_overhead + participants_json_size + chat_state_size;
         let encrypted_size = json_size + encryption_overhead;
         let key_file_size = 32; // 256-bit key
-        
+
         encrypted_size + key_file_size
     }
 
     /// Encrypt group data
-    fn encrypt_group_data(&self, data: &GroupData, key: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    fn encrypt_group_data(
+        &self,
+        data: &GroupData,
+        key: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let key = Key::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
@@ -424,7 +476,8 @@ impl GroupStorage {
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let json_data = serde_json::to_string(data)?;
-        let encrypted = cipher.encrypt(nonce, json_data.as_bytes())
+        let encrypted = cipher
+            .encrypt(nonce, json_data.as_bytes())
             .map_err(|e| format!("Encryption failed: {}", e))?;
 
         // Prepend nonce to encrypted data
@@ -434,7 +487,11 @@ impl GroupStorage {
     }
 
     /// Decrypt group data
-    fn decrypt_group_data(&self, encrypted_data: &[u8], key: &[u8]) -> Result<GroupData, StorageError> {
+    fn decrypt_group_data(
+        &self,
+        encrypted_data: &[u8],
+        key: &[u8],
+    ) -> Result<GroupData, StorageError> {
         if key.len() != 32 {
             return Err(StorageError::KeyMismatch);
         }
@@ -449,14 +506,14 @@ impl GroupStorage {
         let nonce = Nonce::from_slice(&encrypted_data[..12]);
         let ciphertext = &encrypted_data[12..];
 
-        let decrypted = cipher.decrypt(nonce, ciphertext)
+        let decrypted = cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|_| StorageError::AuthenticationFailed)?;
 
-        let json_str = String::from_utf8(decrypted)
-            .map_err(|_| StorageError::DataCorrupted)?;
+        let json_str = String::from_utf8(decrypted).map_err(|_| StorageError::DataCorrupted)?;
 
-        let data: GroupData = serde_json::from_str(&json_str)
-            .map_err(|_| StorageError::DataCorrupted)?;
+        let data: GroupData =
+            serde_json::from_str(&json_str).map_err(|_| StorageError::DataCorrupted)?;
 
         Ok(data)
     }
